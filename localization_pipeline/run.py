@@ -7,11 +7,18 @@ from denoiser import Denoise
 from merge_results import get_merged_arrays
 
 
+
 ### Change paths to your data here
 bin_file = 'standardized_data.bin'
 dtype_input = 'float32'
-fname_spike_train = "spt.npy"
-geom_path = "geom_np2.npy"
+
+fname_spike_train = "spt.npy" 
+# Sort spike train if not 
+spt_array = np.load(fname_spike_train)
+spt_array = spt_array[spt_array[:, 0].argsort()]
+np.save(fname_spike_train, spt_array)
+
+geom_path = "channels_maps/np2_channel_map.npy"
 n_channels = np.load(geom_path).shape[0]
 
 denoiser_weights = '/pretrained_denoiser/denoise.pt'
@@ -67,18 +74,37 @@ localizer_obj.compute_aligned_templates()
 localizer_obj.load_denoiser()
 
 for i in tqdm(range(n_batches)):
-    localizer_obj.get_estimate(i, threshold = 6, output_directory = '/media/cat/julien/test_final_loc_code/position_results_files')
+    localizer_obj.get_estimate(i, threshold = 6, output_directory = '/position_results_files')
 
 
 ##### Merge results 
 
-input_directory = '/media/cat/julien/test_final_loc_code/position_results_files'
-output_directory = '/media/cat/julien/test_final_loc_code/final_results/'
+input_directory = '/position_results_files'
+output_directory = '/final_results'
 
-get_merged_arrays('/media/cat/julien/test_final_loc_code/position_results_files', '/media/cat/julien/test_final_loc_code/final_results/', n_batches)
+get_merged_arrays(input_directory, output_directory, n_batches)
 
+#### Load arrays and select spikes that have been localized 
+#### This is necessary in order to visualize spikes
+fname_z_merged = os.path.join(output_directory, 'results_z_merged.npy')
+fname_z_mean_merged = os.path.join(output_directory, 'results_z_mean_merged.npy')
+fname_x_merged = os.path.join(output_directory, 'results_x_merged.npy')
+fname_x_mean_merged = os.path.join(output_directory, 'results_x_mean_merged.npy')
+fname_alpha_merged = os.path.join(output_directory, 'results_alpha_merged.npy')
+fname_y_merged = os.path.join(output_directory, 'results_y_merged.npy')
+fname_max_ptp_merged = os.path.join(output_directory, 'results_max_ptp_merged.npy')
+fname_spread_merged = os.path.join(output_directory, 'results_spread_merged.npy')
+fname_max_channels = os.path.join(output_directory, 'results_max_channels.npy')
+fname_times_read = os.path.join(output_directory, 'times_read.npy')
+fname_time_width = os.path.join(output_directory, 'results_width.npy')
 
+times_read = np.load(fname_times_read)
+x_array = np.load(fname_x_merged)[times_read == 1]
+z_array = np.load(fname_z_merged)[times_read == 1]
+ptp_array = np.load(fname_max_ptp_merged)[times_read == 1]
 
-
+np.save(fname_x_merged, x_array)
+np.save(fname_max_ptp_merged, ptp_array)
+np.save(fname_z_merged, z_array)
 
 
