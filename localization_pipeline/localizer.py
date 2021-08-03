@@ -14,7 +14,10 @@ class LOCALIZER(object):
         self.dtype = np.dtype(dtype)
         self.spike_train = np.load(spike_train_path)
         self.spike_train = self.spike_train[self.spike_train[:, 0].argsort()]
-        self.templates = np.load(templates_path)
+        if templates_path is not None:
+            self.templates = np.load(templates_path)
+        else:
+            self.get_templates()
         self.multi_processing = multi_processing
         self.n_processors = n_processors
         self.spike_size = spike_size
