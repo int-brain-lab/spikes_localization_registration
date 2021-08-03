@@ -7,13 +7,15 @@ fs = 30000 # (sampling rate)
 
 ### To plot only spikes with PTP > Threshold
 
+
+#### Change the paths to where you stored the results arrays
 threshold = 6
 high_idx_first = np.load("max_ptp.npy")
 high_idx_first = np.where(high_idx_first > threshold)[0]
 
-x = np.load('optimized_x_position.npy')[high_idx_first]
-y = np.load('optimized_y_position.npy')[high_idx_first]
-z = np.load('optimized_z_position.npy')[high_idx_first]
+x = np.load('x_results.npy')[high_idx_first]
+y = np.load('y_results.npy')[high_idx_first]
+z = np.load('z_results.npy')[high_idx_first]
 clusters = np.load('yass_clusters.npy')[high_idx_first]
 amp = np.load('max_ptp.npy')[high_idx_first]
 st = np.load('spike_times.npy')[high_idx_first]/ fs
