@@ -1,6 +1,6 @@
 # Localizing NP detected spikes and registering raw data
 
-## This repository provides code for localizing the spikes detected in Neuropixels recordings, estimating motion and registering raw data, and tools for visualizing and evaluating the output of any spike sorter.
+## This repository provides code for localizing the spikes detected in Neuropixels recordings, estimating motion from localization results, and tools for visualizing and evaluating the output of any spike sorter.
 
 ### Localization works as follow : 
  - It takes as input the detected spikes and filtered + standardized data
@@ -12,8 +12,11 @@ Localization code is designed to be fully self-contained. Code to read data and 
 Instructions to train and obtain a new NN-Denoiser can be found on YASS github repository. 
 
 
-### Motion estimate and registration work as follow : 
-
+### Motion estimate works as follow : 
+ - It takes as input the localizations/amplitudes/spike times/geometry array of spikes.
+ - A raster plot is generated from the inputs, and it is destriped/denoised.
+ - By default, non-rigid image-based decentralized registration is run, and the
+   motion estimate + original raster + registered raster are saved.
 
 
 ### Visualisation : 
