@@ -24,4 +24,8 @@ Instructions to train and obtain a new NN-Denoiser can be found on YASS github r
 The repository contain a script that provides a 3d interactive visualization of the spike train and its localization features. 
 Code requires Datoviz (https://github.com/datoviz/datoviz.git, see documentation here https://datoviz.org) 
 
+### Quality Metrics : 
 
+The files in quality_metric show how to compute simple metrics for quantitatively evaluating the quality of registration or the quality of the spike train. 
+drift_metrics.py is a script containing code to derive a general correlation score (taken from A New Coefficient of Correlation, Sourav Chatterjee, 2020) between the amplitude (PTP) of units and displacement estimate, firing rate and displacement estimates, and between the first PC of neural activity and displacement. 
+The first two scores allow to evaluate the quality of individual units (ideally, a good unit would have low FR and PTP correlation with displacement) and the quality of the recording (which should have low correlation between the first PC of neural activity and displacement). 
