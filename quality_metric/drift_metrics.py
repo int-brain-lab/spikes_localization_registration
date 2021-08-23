@@ -110,6 +110,7 @@ geom_array = np.load(fname_geom_array)
 bin_file = 'standardized.bin'
 dtype = 'float32' #Type of standardized bin file
 
+### The following code is written specifically for IBL datasets
 
 # Set align_times to be the beginning of each trial
 align_times = 
