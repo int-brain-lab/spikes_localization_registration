@@ -11,13 +11,15 @@
 Localization code is designed to be fully self-contained. Code to read data and denoise data is written following the YASS pipeline (YASS: Yet Another Spike Sorter applied to large-scale multi-electrode array recordings in primate retina, Lee et al., 2020) and github repository (https://github.com/paninski-lab/yass).
 Instructions to train and obtain a new NN-Denoiser can be found on YASS github repository. 
 
-
 ### Motion estimate works as follow : 
  - It takes as input the localizations/amplitudes/spike times/geometry array of spikes.
  - A raster plot is generated from the inputs, and it is destriped/denoised.
  - By default, non-rigid image-based decentralized registration is run, and the
    motion estimate + original raster + registered raster are saved.
 
+### Detection : 
+
+To run detection and deduplication, and get an index of spikes (which is sufficient for localization, motion estimate and registration), the files congained in detect and the trained neural network weights detect.pt allow to run fast detection and deduplication of spikes on your standardized recording.
 
 ### Visualisation : 
 
