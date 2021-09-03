@@ -16,21 +16,94 @@ import parmap
 from detect import Detect
 from localization_pipeline.denoise import Denoise
 
-from yass.util import file_loader
-from yass.threshold.detect import voltage_threshold
-from yass.detect.deduplication import deduplicate_gpu, deduplicate
-from yass.detect.output import gather_result
+from deduplication import deduplicate_gpu, deduplicate
 
-### If set to false, run threshold instead
-## ADD ARGUMENTS
-apply_nn = True
-geom_array = 
-spatial_radius
+from scipy.signal import argrelmin
 
 
 #### ADD ARGUMENTS AND CHANGE ARGUMENTS
 
+def voltage_threshold(recording, threshold, order=5):
 
+    T, C = recording.shape
+    spike_index = np.zeros((0, 2), 'int32')
+    energy = np.zeros(0, 'float32')
+    for c in range(C):
+        single_chan_rec = recording[:, c]
+        index = argrelmin(single_chan_rec, order=order)[0]
+        index = index[single_chan_rec[index] < -threshold]
+        spike_index_temp = np.vstack((index,
+                                      np.ones(len(index), 'int32')*c)).T
+        spike_index = np.concatenate((spike_index, spike_index_temp), axis=0)
+        energy_ = np.abs(single_chan_rec[index])
+        energy = np.hstack((energy, energy_))
+
+    return spike_index, energy
+
+def gather_result(fname_save, batch_files_dir):
+
+    logger = logging.getLogger(__name__)
+    logger.info('gather detected spikes')
+
+    fnames = os.listdir(batch_files_dir)
+    spike_index = []
+    spike_index_prekill = []
+    n_spikes_prekill = 0
+    n_spikes_postkill = 0
+    for batch_id in range(len(fnames)):
+
+        # detection index
+        fname = os.path.join(batch_files_dir, fnames[batch_id])
+        detect_data =  np.load(fname, allow_pickle=True)
+        spike_index_prekill_list = detect_data['spike_index']
+        spike_index_list = detect_data['spike_index_dedup']
+        minibatch_loc = detect_data['minibatch_loc']
+
+        # kill edge spikes and gather results
+        for ctr in range(len(spike_index_list)):
+
+            t_start, t_end = minibatch_loc[ctr]
+            spike_index_temp = spike_index_list[ctr]
+
+            idx_keep = np.where(np.logical_and(
+                spike_index_temp[:, 0] >= t_start,
+                spike_index_temp[:, 0] < t_end))[0]
+            spike_index.append(spike_index_temp[idx_keep].astype('int32'))
+
+            spike_index_prekill.append(spike_index_prekill_list[ctr].astype('int32'))
+
+            n_spikes_prekill += spike_index_prekill_list[ctr].shape[0]
+            n_spikes_postkill += len(idx_keep)
+
+    logger.info('Total {} spikes detected'.format(
+        n_spikes_prekill))
+    logger.info('Total {} spikes survived after deduplication'.format(
+        n_spikes_postkill))
+
+    spike_index = np.vstack(spike_index)
+    #spike_index_prekill = np.vstack(spike_index_prekill)
+    
+    idx_sort = np.argsort(spike_index[:,0])
+    spike_index = spike_index[idx_sort]
+
+    #idx_sort = np.argsort(spike_index_prekill[:,0])
+    #spike_index_prekill = spike_index_prekill[idx_sort]
+
+    np.save(fname_save, spike_index)
+    #np.save(fname_save[:fname_save.rfind('.')]+'_prekill.npy',
+    #        spike_index_prekill)
+
+def get_idx_list_n_batches(n_sec_chunk, sampling_rate, start, end):
+    batch_size = sampling_rate*n_sec_chunk
+    indexes = np.arange(start, end, batch_size)
+    indexes = np.hstack((indexes, end))
+
+    idx_list = []
+    for k in range(len(indexes) - 1):
+        idx_list.append([indexes[k], indexes[k + 1]])
+    idx_list = np.int64(np.vstack(idx_list))
+    n_batches = len(idx_list)
+    return idx_list, n_batches
 
 
 def read_data(bin_file, dtype_str, data_start, data_end, geom_array, channels=None):
@@ -56,14 +129,8 @@ def read_data(bin_file, dtype_str, data_start, data_end, geom_array, channels=No
 def read_data_batch(batch_id, rec_len, sampling_rate, n_sec_chunk, len_recording, geom_array, dtype_str, add_buffer=False, channels=None):
     dtype = np.dtype(dtype_str)
     batch_size = sampling_rate*n_sec_chunk
-    indexes = np.arange(0, len_recording*sampling_rate, batch_size)
-    indexes = np.hstack((indexes, len_recording*sampling_rate))
 
-    idx_list = []
-    for k in range(len(indexes) - 1):
-        idx_list.append([indexes[k], indexes[k + 1]])
-    idx_list = np.int64(np.vstack(idx_list))
-
+    idx_list, n_batches = get_idx_list_n_batches(n_sec_chunk, sampling_rate, 0, len_recording)
 
     # batch start and end
     data_start, data_end = idx_list[batch_id]
@@ -110,7 +177,7 @@ def read_data_batch(batch_id, rec_len, sampling_rate, n_sec_chunk, len_recording
 
     return data
 
-def read_data_batch_batch(batch_id, n_sec_chunk_small, sampling_rate, buffer, dtype_str, add_buffer=False, channels=None):
+def read_data_batch_batch(batch_id, n_sec_chunk_small, sampling_rate, buffer_size, dtype_str, add_buffer=False, channels=None):
     '''
     this is for nn detection using gpu
     get a batch and then make smaller batches
@@ -122,9 +189,9 @@ def read_data_batch_batch(batch_id, n_sec_chunk_small, sampling_rate, buffer, dt
     T_mini = int(sampling_rate*n_sec_chunk_small)
 
     if add_buffer:
-        T = T - 2*buffer
+        T = T - 2*buffer_size
     else:
-        buffer = 0
+        buffer_size = 0
 
     # # batch sizes
     # indexes = np.arange(0, T, T_mini)
@@ -134,7 +201,7 @@ def read_data_batch_batch(batch_id, n_sec_chunk_small, sampling_rate, buffer, dt
 
     indexes = np.arange(0, T, T_mini)
     indexes = np.hstack((indexes, indexes[-1]+T_mini))
-    indexes += buffer
+    indexes += buffer_size
    
    
     n_mini_batches = len(indexes) - 1
@@ -147,9 +214,9 @@ def read_data_batch_batch(batch_id, n_sec_chunk_small, sampling_rate, buffer, dt
 
         data = np.concatenate((data, pad_zeros), axis=0)
     data_loc = np.zeros((n_mini_batches, 2), 'int32')
-    data_batched = np.zeros((n_mini_batches, T_mini + 2*buffer, C), 'float32')
+    data_batched = np.zeros((n_mini_batches, T_mini + 2*buffer_size, C), 'float32')
     for k in range(n_mini_batches):
-        data_batched[k] = data[indexes[k]-buffer:indexes[k+1]+buffer]
+        data_batched[k] = data[indexes[k]-buffer_size:indexes[k+1]+buffer_size]
         data_loc[k] = [indexes[k], indexes[k+1]]
     return data_batched, data_loc
 
@@ -207,9 +274,8 @@ def find_channel_neighbors(geom, radius):
     return (squareform(pdist(geom)) <= radius)
 
 
-def run(standardized_path, standardized_dtype,
-        output_directory, run_chunk_sec='full'):
-    ## CHANGE ARGUMENTS
+def run(standardized_path, standardized_dtype, output_directory, geom_array, spatial_radius, apply_nn, n_sec_chunk, n_batches, n_processors, n_sec_chunk_gpu_detect, sampling_rate, len_recording,
+    detect_threshold, path_nn_detector, n_filters_detect, spike_size_nn, path_nn_denoiser, n_filters_denoise, filter_sizes_denoise, run_chunk_sec='full'):
            
     """Execute detect step
     Parameters
@@ -278,15 +344,33 @@ def run(standardized_path, standardized_dtype,
             standardized_path,
             standardized_dtype,
             output_temp_files,
+            sampling_rate, 
+            len_recording, 
+            n_sec_chunk,
+            n_processors, 
+            n_sec_chunk_gpu_detect, 
+            detect_threshold,
+            neigh_channels, 
+            path_nn_detector, 
+            n_filters_detect, 
+            spike_size_nn, 
+            path_nn_denoiser, 
+            n_filters_denoise, 
+            filter_sizes_denoise,
             run_chunk_sec=run_chunk_sec)
 
     else:
         run_voltage_treshold(standardized_path,
                              standardized_dtype,
+                             spike_size_nn,
+                             n_sec_chunk, 
+                             geom_array,
+                             neigh_channels, 
+                             n_batches, ### N_BATCHES
+                             detect_threshold, 
+                             channel_index,
                              output_temp_files,
-                             n_filters, 
-                             spike_size_nn, 
-                             channel_index, 
+
                              run_chunk_sec=run_chunk_sec)
 
     ##### gather results #####
@@ -296,8 +380,8 @@ def run(standardized_path, standardized_dtype,
     return fname_spike_index
 
 
-def run_neural_network(standardized_path, standardized_dtype, output_directory, n_sec_chunk, n_processors, n_sec_chunk_gpu_detect, detect_threshold,
-    path_nn_detector, n_filters_detect, spike_size_nn, path_nn_denoiser, n_filters_denoise, filter_sizes_denoise, run_chunk_sec='full'):
+def run_neural_network(standardized_path, standardized_dtype, output_directory, sampling_rate, len_recording, n_sec_chunk, n_processors, n_sec_chunk_gpu_detect, detect_threshold,
+    neigh_channels, path_nn_detector, n_filters_detect, spike_size_nn, path_nn_denoiser, n_filters_denoise, filter_sizes_denoise, run_chunk_sec='full'):
                            
     """Run neural network detection
     """
@@ -319,7 +403,7 @@ def run_neural_network(standardized_path, standardized_dtype, output_directory, 
     print ("   batch length to (sec): ", batch_length, 
            " (longer increase speed a bit)")
     print ("   length of each seg (sec): ", n_sec_chunk)
-    buffer = spike_size_nn
+    buffer_size = spike_size_nn
     if run_chunk_sec == 'full':
         chunk_sec = None
     else:
@@ -332,7 +416,7 @@ def run_neural_network(standardized_path, standardized_dtype, output_directory, 
 
     # loop over each chunk
     batch_ids = np.arange(n_batches)
-
+    
     if False:
         batch_ids_split = np.split_array(batch_ids, len(CONFIG.torch_devices))
         processes = []
@@ -346,13 +430,13 @@ def run_neural_network(standardized_path, standardized_dtype, output_directory, 
         for p in processes:
             p.join()
     else:
-        run_nn_detction_batch(batch_ids, output_directory, reader, n_sec_chunk,
+        run_nn_detection_batch(batch_ids, output_directory, reader, n_sec_chunk, sampling_rate, len_recording, buffer_size, standardized_dtype,
                                  detector, denoiser, channel_index_dedup,
                                  detect_threshold, device=0) #CONFIG.resources.gpu_id?
 
 
-def run_nn_detection_batch(batch_ids, output_directory,
-                          reader, n_sec_chunk,
+def run_nn_detection_batch(batch_ids, output_directory, n_sec_chunk, 
+                          sampling_rate, len_recording, buffer_size, dtype_str,
                           detector, denoiser,
                           channel_index_dedup,
                           detect_threshold,
@@ -360,6 +444,8 @@ def run_nn_detection_batch(batch_ids, output_directory,
 
     detector = detector.to(device)
     denoiser = denoiser.to(device)
+    ### GET IDX LIST
+    idx_list, n_batches = get_idx_list_n_batches(n_sec_chunk, sampling_rate, 0, len_recording)
 
     for batch_id in batch_ids:
         # skip if the file exists
@@ -375,15 +461,10 @@ def run_nn_detection_batch(batch_ids, output_directory,
         # but partioned into smaller minibatches of 
         # size n_sec_chunk_gpu
         ### UPDATE ARGUMENTS
-        batched_recordings, minibatch_loc_rel = read_data_batch_batch(
-            batch_id,
-            #CONFIG.detect.n_sec_chunk,
-            n_sec_chunk,
-            add_buffer=True)
+        batched_recordings, minibatch_loc_rel = read_data_batch_batch(batch_id, n_sec_chunk, sampling_rate, buffer_size, dtype_str, add_buffer=True)
 
         # offset for big batch
-        ### GET IDX LIST + BUFFER BEFORE
-        batch_offset = idx_list[batch_id, 0] - buffer
+        batch_offset = idx_list[batch_id, 0] - buffer_size
         # location of each minibatch (excluding buffer)
         minibatch_loc = minibatch_loc_rel + batch_offset
         spike_index_list = []
@@ -439,7 +520,7 @@ def run_nn_detection_batch(batch_ids, output_directory,
     del denoiser
 
 
-def run_voltage_treshold(standardized_path, standardized_dtype,
+def run_voltage_treshold(standardized_path, standardized_dtype, spike_size_nn, n_sec_chunk, geom_array, neigh_channels, n_batches, threshold, channel_index,
                          output_directory, run_chunk_sec='full'):
                            
     """Run detection that thresholds on amplitude
@@ -454,7 +535,7 @@ def run_voltage_treshold(standardized_path, standardized_dtype,
     print ("   batch length to (sec): ", batch_length, 
            " (longer increase speed a bit)")
     print ("   length of each seg (sec): ", n_sec_chunk)
-    buffer = CONFIG.spike_size
+    buffer_size = spike_size_nn
     if run_chunk_sec == 'full':
         chunk_sec = None
     else:
@@ -473,32 +554,37 @@ def run_voltage_treshold(standardized_path, standardized_dtype,
 
     # neighboring channels
     channel_index = make_channel_index(
-        CONFIG.neigh_channels, CONFIG.geom, steps=2)
-    
+        neigh_channels, geom_array, steps=2)
+    idx_list, n_batches = get_idx_list_n_batches(n_sec_chunk, sampling_rate, 0, len_recording)
+
     ## ADD ARGUMENTS
     if multi_processing_flag:
         parmap.starmap(run_voltage_threshold_parallel, 
-                       list(zip(np.arange(reader.n_batches))),
-                       reader,
+                       list(zip(np.arange(n_batches))),
                        n_sec_chunk,
                        threshold,
                        channel_index,
                        output_directory,
+                       buffer_size, 
+                       standardized_dtype, 
+                       idx_list,
                        processes=n_processors,
                        pm_pbar=True)                
     else:
-        for batch_id in range(reader.n_batches):
+        for batch_id in range(n_batches):
             run_voltage_threshold_parallel(
                 batch_id,
-                reader,
                 n_sec_chunk,
-                CONFIG.detect.threshold,
+                threshold,
                 channel_index,
+                buffer_size,
+                standardized_dtype, 
+                idx_list,
                 output_directory)
 
 
-def run_voltage_threshold_parallel(batch_id, reader, n_sec_chunk,
-                                   threshold, channel_index,
+def run_voltage_threshold_parallel(batch_id, n_sec_chunk,
+                                   threshold, channel_index, buffer_size, dtype_str, idx_list,
                                    output_directory):
 
     # skip if the file exists
@@ -515,10 +601,13 @@ def run_voltage_threshold_parallel(batch_id, reader, n_sec_chunk,
     batched_recordings, minibatch_loc_rel = read_data_batch_batch(
         batch_id,
         n_sec_chunk,
+        sampling_rate, 
+        buffer_size, 
+        dtype_str, 
         add_buffer=True)
 
     # offset for big batch
-    batch_offset = idx_list[batch_id, 0] - buffer
+    batch_offset = idx_list[batch_id, 0] - buffer_size
     # location of each minibatch (excluding buffer)
     minibatch_loc = minibatch_loc_rel + batch_offset
     spike_index_list = []
