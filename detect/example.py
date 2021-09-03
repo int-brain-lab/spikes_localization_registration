@@ -11,7 +11,7 @@ import torch.multiprocessing as mp
 import parmap
 
 from detector import Detect
-from localization_pipeline.denoise import Denoise
+from localization_pipeline.denoiser import Denoise
 
 from deduplication import deduplicate_gpu, deduplicate
 
@@ -20,7 +20,7 @@ from scipy.signal import argrelmin
 from run import run
 
 ## ADD ARGUMENTS
-geom_path = 'spikes_localization_registration/channel_maps/np2_channel_map.npy'
+geom_path = 'spikes_localization_registration/channels_maps/np2_channel_map.npy'
 path_nn_detector = 'spikes_localization_registration/pretrained_detector/detect.pt'
 path_nn_denoiser = 'spikes_localization_registration/pretrained_denoiser/denoise.pt'
 standardized_path = 'standardized.bin'

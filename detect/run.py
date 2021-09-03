@@ -13,13 +13,13 @@ import torch
 import torch.multiprocessing as mp
 import parmap
 
-from detect import Detect
-from localization_pipeline.denoise import Denoise
+from detect.detector import Detect
+from localization_pipeline.denoiser import Denoise
 
-from deduplication import deduplicate_gpu, deduplicate
+from detect.deduplication import deduplicate_gpu, deduplicate
 
 from scipy.signal import argrelmin
-
+from scipy.spatial.distance import pdist, squareform
 
 #### ADD ARGUMENTS AND CHANGE ARGUMENTS
 
@@ -95,8 +95,8 @@ def gather_result(fname_save, batch_files_dir):
 
 def get_idx_list_n_batches(n_sec_chunk, sampling_rate, start, end):
     batch_size = sampling_rate*n_sec_chunk
-    indexes = np.arange(start, end, batch_size)
-    indexes = np.hstack((indexes, end))
+    indexes = np.arange(start*sampling_rate, end*sampling_rate, batch_size)
+    indexes = np.hstack((indexes, end*sampling_rate))
 
     idx_list = []
     for k in range(len(indexes) - 1):
@@ -107,7 +107,7 @@ def get_idx_list_n_batches(n_sec_chunk, sampling_rate, start, end):
 
 
 def read_data(bin_file, dtype_str, data_start, data_end, geom_array, channels=None):
-    dtype = np.dtype(dtype)
+    dtype = np.dtype(dtype_str)
     if channels is None:
         n_channels = geom_array.shape[0]
     else:
@@ -126,15 +126,16 @@ def read_data(bin_file, dtype_str, data_start, data_end, geom_array, channels=No
 
     return data
 
-def read_data_batch(batch_id, rec_len, sampling_rate, n_sec_chunk, len_recording, geom_array, dtype_str, add_buffer=False, channels=None):
+def read_data_batch(bin_file, batch_id, rec_len, sampling_rate, n_sec_chunk, spike_size_nn, geom_array, dtype_str, add_buffer=False, channels=None):
     dtype = np.dtype(dtype_str)
     batch_size = sampling_rate*n_sec_chunk
 
-    idx_list, n_batches = get_idx_list_n_batches(n_sec_chunk, sampling_rate, 0, len_recording)
+    idx_list, n_batches = get_idx_list_n_batches(n_sec_chunk, sampling_rate, 0, rec_len)
 
     # batch start and end
     data_start, data_end = idx_list[batch_id]
     # add buffer if asked
+    buffer_templates = spike_size_nn
     if add_buffer:
         data_start -= buffer_templates
         data_end += buffer_templates
@@ -147,16 +148,16 @@ def read_data_batch(batch_id, rec_len, sampling_rate, n_sec_chunk, len_recording
             left_buffer_size = 0
 
         # if end is above rec_len, put it back to rec_len and and zeros buffer
-        if data_end > rec_len + offset:
-            right_buffer_size = data_end - rec_len
-            data_end = rec_len
+        if data_end > rec_len*sampling_rate:
+            right_buffer_size = data_end - rec_len*sampling_rate
+            data_end = rec_len*sampling_rate
         else:
             right_buffer_size = 0
 
     #data_start= int(data_start)
     #data_end = int(data_end)
     # read data
-    data = read_data(data_start, data_end, channels)
+    data = read_data(bin_file, dtype_str, data_start, data_end, geom_array, channels)
     # add leftover buffer with zeros if necessary
     if channels is None:
         n_channels = geom_array.shape[0]
@@ -177,13 +178,13 @@ def read_data_batch(batch_id, rec_len, sampling_rate, n_sec_chunk, len_recording
 
     return data
 
-def read_data_batch_batch(batch_id, n_sec_chunk_small, sampling_rate, buffer_size, dtype_str, add_buffer=False, channels=None):
+def read_data_batch_batch(bin_file, batch_id, n_sec_chunk_small, sampling_rate, buffer_size, dtype_str, geom_array, len_recording, spike_size_nn, add_buffer=False, channels=None):
     '''
     this is for nn detection using gpu
     get a batch and then make smaller batches
     '''
     dtype = np.dtype(dtype_str)
-    data = read_data_batch(batch_id, add_buffer, channels) ## ADD ARGUMENTS
+    data = read_data_batch(bin_file, batch_id, len_recording, sampling_rate, n_sec_chunk_small, spike_size_nn, geom_array, dtype, add_buffer, channels) ## ADD ARGUMENTS
     
     T, C = data.shape
     T_mini = int(sampling_rate*n_sec_chunk_small)
@@ -272,7 +273,108 @@ def find_channel_neighbors(geom, radius):
         channels are considered neighbors
     """
     return (squareform(pdist(geom)) <= radius)
+def make_channel_groups(n_channels, neighbors, geom):
+    """[DESCRIPTION]
+    Parameters
+    ----------
+    n_channels: int
+        Number of channels
+    neighbors: numpy.ndarray
+        Neighbors matrix
+    geom: numpy.ndarray
+        geometry matrix
+    Returns
+    -------
+    list
+        List of channel groups based on [?]
+    """
+    channel_groups = list()
+    c_left = np.array(range(n_channels))
+    neighChan_temp = np.array(neighbors)
 
+    while len(c_left) > 0:
+        c_tops = c_left[geom[c_left, 1] == np.max(geom[c_left, 1])]
+        c_topleft = c_tops[np.argmin(geom[c_tops, 0])]
+        c_group = np.where(
+            np.sum(neighChan_temp[neighChan_temp[c_topleft]], 0))[0]
+
+        neighChan_temp[c_group, :] = 0
+        neighChan_temp[:, c_group] = 0
+
+        for c in c_group:
+            c_left = np.delete(c_left, int(np.where(c_left == c)[0]))
+
+        channel_groups.append(c_group)
+
+    return channel_groups
+
+
+def order_channels_by_distance(reference, channels, geom):
+    """Order channels by distance using certain channel as reference
+    Parameters
+    ----------
+    reference: int
+        Reference channel
+    channels: np.ndarray
+        Channels to order
+    geom
+        Geometry matrix
+    Returns
+    -------
+    numpy.ndarray
+        1D array with the channels ordered by distance using the reference
+        channels
+    numpy.ndarray
+        1D array with the indexes for the ordered channels
+    """
+    coord_main = geom[reference]
+    coord_others = geom[channels]
+    idx = np.argsort(np.sum(np.square(coord_others - coord_main), axis=1))
+
+    return channels[idx], idx
+
+
+def n_steps_neigh_channels(neighbors_matrix, steps):
+    """Compute a neighbors matrix by considering neighbors of neighbors
+    Parameters
+    ----------
+    neighbors_matrix: numpy.ndarray
+        Neighbors matrix
+    steps: int
+        Number of steps to still consider channels as neighbors
+    Returns
+    -------
+    numpy.ndarray (n_channels, n_channels)
+        Symmetric boolean matrix with the i, j as True if the ith and jth
+        channels are considered neighbors
+    """
+    C = neighbors_matrix.shape[0]
+
+    # each channel is its own neighbor (diagonal of trues)
+    output = np.eye(C, dtype='bool')
+
+    # for every step
+    for _ in range(steps):
+
+        # go trough every channel
+        for current in range(C):
+
+            # neighbors of the current channel
+            neighbors_current = output[current]
+
+            # get the neighbors of all the neighbors of the current channel
+            neighbors_of_neighbors = neighbors_matrix[neighbors_current]
+
+            # sub over rows and convert to bool, this will turn to true entries
+            # where at least one of the neighbors has each channel as its
+            # neighbor
+            is_neighbor_of_neighbor = np.sum(neighbors_of_neighbors,
+                                             axis=0).astype('bool')
+
+            # set the channels that are neighbors to true
+            output[current][is_neighbor_of_neighbor] = True
+
+    return output
 
 def run(standardized_path, standardized_dtype, output_directory, geom_array, spatial_radius, apply_nn, n_sec_chunk, n_batches, n_processors, n_sec_chunk_gpu_detect, sampling_rate, len_recording,
     detect_threshold, path_nn_detector, n_filters_detect, spike_size_nn, path_nn_denoiser, n_filters_denoise, filter_sizes_denoise, run_chunk_sec='full'):
@@ -335,7 +437,7 @@ def run(standardized_path, standardized_dtype, output_directory, geom_array, spa
         os.mkdir(output_temp_files)
 
     # neighboring channels
-    neigh_channels = geom.find_channel_neighbors(geom_array, spatial_radius)
+    neigh_channels = find_channel_neighbors(geom_array, spatial_radius)
 
     # run detection
     if apply_nn:
@@ -351,6 +453,7 @@ def run(standardized_path, standardized_dtype, output_directory, geom_array, spa
             n_sec_chunk_gpu_detect, 
             detect_threshold,
             neigh_channels, 
+            geom_array,
             path_nn_detector, 
             n_filters_detect, 
             spike_size_nn, 
@@ -381,13 +484,14 @@ def run(standardized_path, standardized_dtype, output_directory, geom_array, spa
 
 
 def run_neural_network(standardized_path, standardized_dtype, output_directory, sampling_rate, len_recording, n_sec_chunk, n_processors, n_sec_chunk_gpu_detect, detect_threshold,
-    neigh_channels, path_nn_detector, n_filters_detect, spike_size_nn, path_nn_denoiser, n_filters_denoise, filter_sizes_denoise, run_chunk_sec='full'):
+    neigh_channels, geom_array, path_nn_detector, n_filters_detect, spike_size_nn, path_nn_denoiser, n_filters_denoise, filter_sizes_denoise, run_chunk_sec='full'):
                            
     """Run neural network detection
     """
     # os.environ["CUDA_VISIBLE_DEVICES"] = str(CONFIG.resources.gpu_id)
-    os.environ["CUDA_VISIBLE_DEVICES"] = 0 
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(0)
     # load NN detector
+    channel_index = make_channel_index(neigh_channels, geom_array, steps=1)
     detector = Detect(n_filters_detect, spike_size_nn, channel_index)
     detector.load(path_nn_detector)
 
@@ -398,6 +502,7 @@ def run_neural_network(standardized_path, standardized_dtype, output_directory, 
     denoiser.load(path_nn_denoiser)
 
     # get data reader
+    n_batches = len_recording//n_sec_chunk
     batch_length = n_sec_chunk*n_processors
     n_sec_chunk = n_sec_chunk_gpu_detect
     print ("   batch length to (sec): ", batch_length, 
@@ -422,7 +527,8 @@ def run_neural_network(standardized_path, standardized_dtype, output_directory, 
         processes = []
         for ii, device in enumerate([torch.device("cuda:0" if torch.cuda.is_available() else "cpu")]): ### SEVERAL DEVICES??
             p = mp.Process(target=run_nn_detection_batch,
-                           args=(batch_ids_split[ii], output_directory, reader, n_sec_chunk,
+                           args=(standardized_path, batch_ids_split[ii], output_directory, n_sec_chunk, spike_size_nn, geom_array, 
+                                 sampling_rate, len_recording, buffer_size, standardized_dtype,
                                  detector, denoiser, channel_index_dedup,
                                  detect_threshold, device))
             p.start()
@@ -430,12 +536,12 @@ def run_neural_network(standardized_path, standardized_dtype, output_directory, 
         for p in processes:
             p.join()
     else:
-        run_nn_detection_batch(batch_ids, output_directory, reader, n_sec_chunk, sampling_rate, len_recording, buffer_size, standardized_dtype,
+        run_nn_detection_batch(standardized_path, batch_ids, output_directory, n_sec_chunk, spike_size_nn, geom_array, sampling_rate, len_recording, buffer_size, standardized_dtype,
                                  detector, denoiser, channel_index_dedup,
                                  detect_threshold, device=0) #CONFIG.resources.gpu_id?
 
 
-def run_nn_detection_batch(batch_ids, output_directory, n_sec_chunk, 
+def run_nn_detection_batch(standardized_path, batch_ids, output_directory, n_sec_chunk, spike_size_nn, geom_array, 
                           sampling_rate, len_recording, buffer_size, dtype_str,
                           detector, denoiser,
                           channel_index_dedup,
@@ -461,8 +567,7 @@ def run_nn_detection_batch(batch_ids, output_directory, n_sec_chunk,
         # but partioned into smaller minibatches of 
         # size n_sec_chunk_gpu
         ### UPDATE ARGUMENTS
-        batched_recordings, minibatch_loc_rel = read_data_batch_batch(batch_id, n_sec_chunk, sampling_rate, buffer_size, dtype_str, add_buffer=True)
-
+        batched_recordings, minibatch_loc_rel = read_data_batch_batch(standardized_path, batch_id, n_sec_chunk, sampling_rate, buffer_size, dtype_str, geom_array, len_recording, spike_size_nn, add_buffer=True)
         # offset for big batch
         batch_offset = idx_list[batch_id, 0] - buffer_size
         # location of each minibatch (excluding buffer)
@@ -494,8 +599,8 @@ def run_nn_detection_batch(batch_ids, output_directory, n_sec_chunk,
             spike_index_dedup_cpu = spike_index_dedup.cpu().data.numpy()
 
             # update the location relative to the whole recording
-            spike_index_cpu[:, 0] += (minibatch_loc[j, 0] - reader.buffer)
-            spike_index_dedup_cpu[:, 0] += (minibatch_loc[j, 0] - reader.buffer)
+            spike_index_cpu[:, 0] += (minibatch_loc[j, 0] - buffer_size)
+            spike_index_dedup_cpu[:, 0] += (minibatch_loc[j, 0] - buffer_size)
             spike_index_list.append(spike_index_cpu)
             spike_index_dedup_list.append(spike_index_dedup_cpu)
 
@@ -632,8 +737,8 @@ def run_voltage_threshold_parallel(batch_id, n_sec_chunk,
         spike_index_dedup = spike_index_dedup.cpu().data.numpy()
         
         # update the location relative to the whole recording
-        spike_index[:, 0] += (minibatch_loc[j, 0] - reader.buffer)
-        spike_index_dedup[:, 0] += (minibatch_loc[j, 0] - reader.buffer)
+        spike_index[:, 0] += (minibatch_loc[j, 0] - buffer_size)
+        spike_index_dedup[:, 0] += (minibatch_loc[j, 0] - buffer_size)
         spike_index_list.append(spike_index)
         spike_index_dedup_list.append(spike_index_dedup)
 
