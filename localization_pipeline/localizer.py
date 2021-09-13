@@ -1,8 +1,11 @@
 import os
 import numpy as np
 from tqdm import tqdm
-from denoiser import Denoise
+from localization_pipeline.denoiser import Denoise
 import scipy.optimize as optim_ls
+import torch
+import torch.multiprocessing as mp
+
 
 class LOCALIZER(object):
     
@@ -14,10 +17,10 @@ class LOCALIZER(object):
         self.dtype = np.dtype(dtype)
         self.spike_train = np.load(spike_train_path)
         self.spike_train = self.spike_train[self.spike_train[:, 0].argsort()]
-        if templates_path is not None:
-            self.templates = np.load(templates_path)
-        else:
-            self.get_templates()
+#         if templates_path is not None:
+#             self.templates = np.load(templates_path)
+#         else:
+#             self.get_templates()
         self.multi_processing = multi_processing
         self.n_processors = n_processors
         self.spike_size = spike_size
@@ -180,11 +183,12 @@ class LOCALIZER(object):
         for i in (range(spike_times_batch.shape[0])):
             unit = spike_units_batch[i]
             channels = np.arange(0, self.n_channels)
-            wfs_0, skipped_idx = self.read_waveforms(np.asarray([int(spike_times_batch[i] + self.offsets[unit])]))
+            wfs_0, skipped_idx = self.read_waveforms(np.asarray([int(spike_times_batch[i] + 18)]))
             if len(skipped_idx) == 0:
-                wfs_0 += self.templates_aligned[int(spike_units_batch[i])].reshape((1, 121, 384))
+#                 wfs_0 += self.templates_aligned[int(spike_units_batch[i])].reshape((1, 121, 384))
                 wfs_0 = self.denoise_wf_nn_tmp(wfs_0)[0]
-                mc = wfs_0.ptp(0).argmax()
+#                 mc = wfs_0.ptp(0).argmax()
+                mc = spike_units_batch[i]
                 if wfs_0.ptp(0).max() > threshold:
                     time_width[i] = np.abs(wfs_0[:, mc].argmax() - wfs_0[:, mc].argmin())
                     max_channels[i] = channels[mc]
