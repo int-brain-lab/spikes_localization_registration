@@ -438,7 +438,7 @@ def run(standardized_path, standardized_dtype, output_directory, geom_array, spa
 
     # neighboring channels
     neigh_channels = find_channel_neighbors(geom_array, spatial_radius)
-
+    channel_index = make_channel_index(neigh_channels, geom_array)
     # run detection
     if apply_nn:
         ## CHANGE ARGUMENTS
@@ -473,10 +473,11 @@ def run(standardized_path, standardized_dtype, output_directory, geom_array, spa
                              detect_threshold, 
                              channel_index,
                              output_temp_files,
-
+                             sampling_rate,
+                             len_recording, 
                              run_chunk_sec=run_chunk_sec)
 
-    ##### gather results #####
+##### gather results #####
     gather_result(fname_spike_index,
                   output_temp_files)
 
@@ -626,7 +627,7 @@ def run_nn_detection_batch(standardized_path, batch_ids, output_directory, n_sec
 
 
 def run_voltage_treshold(standardized_path, standardized_dtype, spike_size_nn, n_sec_chunk, geom_array, neigh_channels, n_batches, threshold, channel_index,
-                         output_directory, run_chunk_sec='full'):
+                         output_directory, sampling_rate, len_recording, run_chunk_sec='full'):
                            
     """Run detection that thresholds on amplitude
     """
@@ -663,16 +664,19 @@ def run_voltage_treshold(standardized_path, standardized_dtype, spike_size_nn, n
     idx_list, n_batches = get_idx_list_n_batches(n_sec_chunk, sampling_rate, 0, len_recording)
 
     ## ADD ARGUMENTS
+    multi_processing_flag = True
+    n_processors = 4
     if multi_processing_flag:
         parmap.starmap(run_voltage_threshold_parallel, 
                        list(zip(np.arange(n_batches))),
                        n_sec_chunk,
                        threshold,
                        channel_index,
-                       output_directory,
                        buffer_size, 
                        standardized_dtype, 
                        idx_list,
+                       output_directory,
+                       sampling_rate, standardized_path, geom_array, len_recording, spike_size_nn, 
                        processes=n_processors,
                        pm_pbar=True)                
     else:
@@ -685,12 +689,12 @@ def run_voltage_treshold(standardized_path, standardized_dtype, spike_size_nn, n
                 buffer_size,
                 standardized_dtype, 
                 idx_list,
-                output_directory)
+                output_directory, sampling_rate, standardized_path, geom_array, len_recording, spike_size_nn)
 
 
 def run_voltage_threshold_parallel(batch_id, n_sec_chunk,
                                    threshold, channel_index, buffer_size, dtype_str, idx_list,
-                                   output_directory):
+                                   output_directory, sampling_rate, bin_file, geom_array, len_recording, spike_size_nn):
 
     # skip if the file exists
     fname = os.path.join(
@@ -702,13 +706,16 @@ def run_voltage_threshold_parallel(batch_id, n_sec_chunk,
 
     # get a bach of size n_sec_chunk
     # but partioned into smaller minibatches of 
-    # size n_sec_chunk_gpu
+    # size n_sec_chunk_gpu        
+
     batched_recordings, minibatch_loc_rel = read_data_batch_batch(
+        bin_file, 
         batch_id,
         n_sec_chunk,
         sampling_rate, 
         buffer_size, 
         dtype_str, 
+        geom_array, len_recording, spike_size_nn,
         add_buffer=True)
 
     # offset for big batch
