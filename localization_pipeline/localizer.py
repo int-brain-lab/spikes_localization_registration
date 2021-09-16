@@ -211,7 +211,7 @@ class LOCALIZER(object):
                     results_alpha[i] = output[3]
                     results_y[i] = np.abs(output[2]) #max(25, (output[2]/wfs_0.ptp(0)[channels_wfs].max() - ((CONFIG.geom[channels[mc]] - [output[0] , CONFIG.geom[channels[mc], 1] + output[1]])**2).sum()).mean())
                     results_spread[i] = (wfs_0.ptp(0)[channels_wfs]*((self.geom_array[channels[channels_wfs]] - [results_x[i], results_z[i]])**2).sum(1)).sum()/wfs_0.ptp(0)[channels_wfs].sum()
-                    results_times[i] = 1
+                    results_times[i] = spike_times_batch[i]
 
         fname_time_width = os.path.join(output_directory, 'results_width_{}.npy'.format(str(batch_id).zfill(6)))
         fname_z = os.path.join(output_directory, 'results_z_{}.npy'.format(str(batch_id).zfill(6)))     
