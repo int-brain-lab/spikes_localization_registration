@@ -9,13 +9,14 @@ import torch.multiprocessing as mp
 
 class LOCALIZER(object):
     
-    def __init__(self, bin_file, dtype, spike_index_path, templates_path, geom_path, denoiser_weights, offset_detector_denoiser, 
+    def __init__(self, bin_file, residual_file, dtype, spike_train_path, templates_path, geom_path, denoiser_weights, denoiser_min,
                  n_filters = [16, 8, 4], filter_sizes = [5, 11, 21], sampling_rate = 30000,
                  multi_processing = 1, n_processors = 5, spike_size = 121, n_channels_loc = 10):
         self.bin_file = bin_file
+        self.residual_file = residual_file
         self.dtype = np.dtype(dtype)
-        self.spike_index = np.load(spike_index_path)
-        self.spike_index = self.spike_index[self.spike_index[:, 0].argsort()]
+        self.spike_train = np.load(spike_train_path)
+        self.spike_train = self.spike_train[self.spike_train[:, 0].argsort()]
         self.multi_processing = multi_processing
         self.n_processors = n_processors
         self.spike_size = spike_size
@@ -23,10 +24,10 @@ class LOCALIZER(object):
         self.sampling_rate = sampling_rate
         self.n_channels = self.geom_array.shape[0]
         self.denoiser_weights = denoiser_weights
+        self.denoiser_min = denoiser_min
         self.n_filters = n_filters,
         self.filter_sizes = filter_sizes,
         self.n_channels_loc = n_channels_loc # Number of channels used for localizing -> Change for spatial radius / depend on geometry array
-        self.offset_detector_denoiser = offset_detector_denoiser
         
     def read_waveforms(self, spike_times, n_times=None, channels=None):
         '''
@@ -55,7 +56,7 @@ class LOCALIZER(object):
         # spike_times are the centers of waveforms
         spike_times_shifted = spike_times - n_times//2
         offsets = spike_times_shifted.astype('int64')*self.dtype.itemsize*self.n_channels
-        with open(self.bin_file, "rb") as fin:
+        with open(self.residual_file, "rb") as fin:
             for ctr, spike in enumerate(spike_times_shifted):
                 try:
                     fin.seek(offsets[ctr], os.SEEK_SET)
@@ -119,6 +120,36 @@ class LOCALIZER(object):
             events_sampled[spike_times_unit] = events[spike_times_unit].copy()
             units_sampled[spike_times_unit] = units[spike_times_unit].copy()
         return events_sampled[events_sampled >= -5], units_sampled[units_sampled >= -5]
+        
+    def get_templates(self):
+        if self.templates is None:
+            units = np.unique(self.spike_train[:, 1])
+            self.templates = np.zeros((units.max()+1, 121, 384))
+            for unit in tqdm(units):
+                spike_times, spike_units = self.subsample(250, self.spike_train[self.spike_train[:, 1]==unit][:, 0], self.spike_train[self.spike_train[:, 1]==unit][:, 1])
+                wfs = self.read_waveforms(spike_times)[0]
+                mc = wfs.mean(0).ptp(0).argmax()
+    #             wfs = shift_chans(wfs, align_get_shifts_with_ref(wfs[:,:,mc], nshifts = 25))
+                if wfs.shape[0]>0:
+                    self.templates[unit] = wfs.mean(0)
+
+    def get_offsets(self):
+        self.offsets = np.zeros(self.templates.shape[0])
+        for unit in range(self.templates.shape[0]):
+            self.offsets[unit] = self.templates[unit][:, self.templates[unit].ptp(0).argmax()].argmin() - self.denoiser_min
+
+    def compute_aligned_templates(self):
+        units = np.unique(self.spike_train[:, 1])
+        self.templates_aligned = np.zeros((units.max()+1, 121, 384))
+        self.get_offsets()
+        for unit in tqdm(units):
+            spike_times, spike_units = self.subsample(250, self.spike_train[self.spike_train[:, 1]==unit][:, 0], self.spike_train[self.spike_train[:, 1]==unit][:, 1])
+            spike_times += int(self.offsets[unit])
+            wfs = self.read_waveforms(spike_times)[0]
+            mc = wfs.mean(0).ptp(0).argmax()
+#             wfs = shift_chans(wfs, align_get_shifts_with_ref(wfs[:,:,mc], nshifts = 25))
+            if wfs.shape[0]>0:
+                self.templates_aligned[unit] = wfs.mean(0)
 
     def minimize_ls(self, vec, wfs_0, z_initial, channels):
         return wfs_0.ptp(1)-vec[3]/(((self.geom_array[channels] - [vec[0], z_initial+vec[1]])**2).sum(1) + vec[2]**2)**0.5 # vec[0]
@@ -126,8 +157,8 @@ class LOCALIZER(object):
 
     def get_estimate(self, batch_id, threshold = 6, output_directory = 'position_results_files'):
         
-        spike_times_batch = self.spike_index[np.logical_and(self.spike_index[:, 0] >= batch_id*self.sampling_rate, self.spike_index[:, 0] < (batch_id+1)*self.sampling_rate), 0]
-        spike_channels_batch = self.spike_index[np.logical_and(self.spike_index[:, 0] >= batch_id*self.sampling_rate, self.spike_index[:, 0] < (batch_id+1)*self.sampling_rate), 1]
+        spike_times_batch = self.spike_train[np.logical_and(self.spike_train[:, 0] >= batch_id*self.sampling_rate, self.spike_train[:, 0] < (batch_id+1)*self.sampling_rate), 0]
+        spike_units_batch = self.spike_train[np.logical_and(self.spike_train[:, 0] >= batch_id*self.sampling_rate, self.spike_train[:, 0] < (batch_id+1)*self.sampling_rate), 1]
 
         time_width = np.zeros(spike_times_batch.shape[0])
         results_x = np.zeros(spike_times_batch.shape[0])
@@ -142,13 +173,14 @@ class LOCALIZER(object):
         results_times = np.zeros(spike_times_batch.shape[0])
 
         for i in (range(spike_times_batch.shape[0])):
+            unit = spike_units_batch[i]
             channels = np.arange(0, self.n_channels)
-            wfs_0, skipped_idx = self.read_waveforms(np.asarray([int(spike_times_batch[i] + self.offset_detector_denoiser)]))
+            wfs_0, skipped_idx = self.read_waveforms(np.asarray([int(spike_times_batch[i] + self.offsets[unit])])) 
             if len(skipped_idx) == 0:
-#                 wfs_0 += self.templates_aligned[int(spike_units_batch[i])].reshape((1, 121, 384))
+                wfs_0 += self.templates_aligned[int(spike_units_batch[i])].reshape((1, 121, 384))
                 wfs_0 = self.denoise_wf_nn_tmp(wfs_0)[0]
-#                 mc = wfs_0.ptp(0).argmax()
-                mc = spike_units_batch[i]
+                mc = wfs_0.ptp(0).argmax()
+
                 if wfs_0.ptp(0).max() > threshold:
                     time_width[i] = np.abs(wfs_0[:, mc].argmax() - wfs_0[:, mc].argmin())
                     max_channels[i] = channels[mc]

@@ -7,30 +7,70 @@ from denoiser import Denoise
 from merge_results import get_merged_arrays
 
 
+
 ### Change paths to your data here
 bin_file = 'standardized_data.bin'
 dtype_input = 'float32'
 
-fname_spike_index = "detection_results/spike_index.npy" 
+fname_spike_train = "spt.npy" 
+# Sort spike train if not 
+spt_array = np.load(fname_spike_train)
+spt_array = spt_array[spt_array[:, 0].argsort()]
+np.save(fname_spike_train, spt_array)
+
 geom_path = "channels_maps/np2_channel_map.npy"
 n_channels = np.load(geom_path).shape[0]
 
 denoiser_weights = '/pretrained_denoiser/denoise.pt'
-
-
-denoiser_min = 42 ## 42 corresponds to the weights given in the repo
-detector_min = 60
-offset_detector_denoiser = detector_min - denoiser_min
-
+denoiser_min = 42 ## Goes with the weights
 
 n_batches = 1000
 len_recording = 1000
 sampling_rate = 30000
 
+### If templates are already computed, input the path here
+fname_templates = "templates.npy"
+### Otherwise, uncomment and run 
+# fname_templates = None
+# localizer_obj = LOCALIZER(bin_file, residual_file, dtype_input, fname_spike_train, fname_templates, geom_path, denoiser_weights, denoiser_min)
+# localizer_obj.get_templates()
+# fname_templates = "templates.npy"
+# np.save(fname_templates, localizer_obj.templates)
+
+##### COMPUTE RESIDUALS 
+'''
+This is necessary for denoising spikes and removing collisions
+It needs to be ran only once per datasets, as residual.bin file can be stored and reused 
+'''
+
+fname_out = 'residuals/residual.bin'
+dtype_out = 'float32'
+dtype_in = 'float32'
+
+residual_obj = RESIDUAL(bin_file,
+                 fname_templates,
+                 fname_spike_train,
+                 n_batches,
+                 len_recording,
+                 sampling_rate,
+                 n_channels,
+                 fname_out,
+                 dtype_in,
+                 dtype_out)
+        
+
+residual_obj.compute_residual('residuals/')
+residual_obj.save_residual()
+
+### If residuals are already computed, input the location here
+residual_file = 'residuals/residual.bin'
+
 
 ##### LOCALIZE SPIKES 
 
-localizer_obj = LOCALIZER(bin_file, dtype_input, fname_spike_index, fname_templates, geom_path, denoiser_weights, offset_detector_denoiser)
+localizer_obj = LOCALIZER(bin_file, residual_file, dtype_input, fname_spike_train, fname_templates, geom_path, denoiser_weights, denoiser_min)
+localizer_obj.get_offsets()
+localizer_obj.compute_aligned_templates()
 localizer_obj.load_denoiser()
 
 for i in tqdm(range(n_batches)):
