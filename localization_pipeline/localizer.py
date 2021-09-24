@@ -148,7 +148,7 @@ class LOCALIZER(object):
 #                 wfs_0 += self.templates_aligned[int(spike_units_batch[i])].reshape((1, 121, 384))
                 wfs_0 = self.denoise_wf_nn_tmp(wfs_0)[0]
 #                 mc = wfs_0.ptp(0).argmax()
-                mc = spike_units_batch[i]
+                mc = spike_channels_batch[i]
                 if wfs_0.ptp(0).max() > threshold:
                     time_width[i] = np.abs(wfs_0[:, mc].argmax() - wfs_0[:, mc].argmin())
                     max_channels[i] = channels[mc]
