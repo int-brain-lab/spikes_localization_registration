@@ -1,4 +1,4 @@
-import motion_estimate as me
+import image_based_motion_estimate as ibme
 import numpy as np
 
 ### change paths to your localization files (e.g. z localizations), and specify the direction
@@ -15,10 +15,15 @@ reg_win_num = 10 # set to 1 for rigid registration
 reg_block_num = 100 # set to 1 for rigid registration
 iteration_num = 2
 
+# length of the recording in seconds
+T = 1000
+subsampling_rate = np.log(T)/T
+
 ### get motion estimate
-total_shift, raster, registered_raster = me.estimate_motion(locs, times, amps, geomarray, direction)
+total_shift = ibme.estimate_motion(locs, times, amps, 
+        geomarray, direction, subsampling_rate=subsampling_rate)
 
 ### save results
 np.save('total_shift.npy', total_shift) # motion estimate
-np.save('raster.npy', raster) # original raster
-np.save('registered_raster.npy', registered_raster) # registered raster
+
+### registered raster plots will be saved in ./image_based_registered_raster

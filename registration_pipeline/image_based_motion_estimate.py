@@ -1,10 +1,10 @@
 """
 Three-dimensional spike localization and improved motion correction for Neuropixels recordings
 
-Code for motion estimation and registration
+Code for image-based motion estimation
 
 Input: {x, y, z} localization estimate, spike times, amplitudes, geometry
-Output: motion estimation, registered raster plot
+Output: image-based motion estimation
 """
 import numpy as np
 import matplotlib.pyplot as plt
@@ -13,27 +13,38 @@ import torch
 import os
 
 from skimage.restoration import denoise_nl_means, estimate_sigma
+from skimage.registration import phase_cross_correlation
 
 from numpy.fft import fft2, ifft2, fftshift, ifftshift # Python DFT
 import pywt
 
 from scipy.stats import norm
 from scipy.ndimage import shift
+from scipy.spatial.distance import pdist, squareform
+from scipy.sparse.linalg import lsqr
+from scipy.stats import zscore
+from scipy.sparse import csr_matrix
 
 def estimate_motion(locs, 
                     times, 
                     amps, 
                     geomarray, 
                     direction, # 'x', 'y', 'z'
-             do_destripe=True,
-             do_denoise=True, # Poisson denoising
-             sigma=0.1,
-             h=1.,
-             patch_size=5,
-             patch_distance=5,
-             reg_win_num=10, # set to 1 for rigid
-             reg_block_num=100, # set to 1 for rigid
-             iteration_num=2):
+                    do_destripe=False,
+                    do_denoise=True, # Poisson denoising
+                    sigma=0.1,
+                    h=1.,
+                    patch_size=5,
+                    patch_distance=5,
+                    reg_win_num=10, # set to 1 for rigid
+                    reg_block_num=100, # set to 1 for rigid
+                    iteration_num=2,
+                    fast_mode=True,
+                    robust_mode=True,
+                    subsampling_rate=1.,
+                    error_sigma=0.1,
+                    time_sigma=1,
+                    robust_regression_sigma=1):
     """
     function that wraps around all functions for motion estimation
     generates raster plot -> poisson denoising (optional) -> decentralized registration
@@ -48,23 +59,21 @@ def estimate_motion(locs,
         destriped = raster
     
     if do_denoise:
-        denoised = poisson_denoising(destriped,sigma=sigma,h=h,
-                                     patch_size=patch_size,
-                                     patch_distance=patch_distance)
+        denoised = poisson_denoising(destriped,sigma=sigma,h=h,patch_size=patch_size,patch_distance=patch_distance)
     else:
         denoised = destriped
     
     # decentralized registration
-    total_shift = decentralized_registration(denoised, 
+    total_shift = decentralized_registration(denoised, fast_mode=fast_mode, robust_mode=robust_mode,
                                              win_num=reg_win_num,
                                              reg_block_num=reg_block_num,
-                                             iter_num=iteration_num)
+                                             iter_num=iteration_num,
+                                             subsampling_rate=subsampling_rate,
+                                             error_sigma=error_sigma, 
+                                             time_sigma=time_sigma,
+                                             robust_regression_sigma = robust_regression_sigma)
     
-    #np.save('total_shift.npy', total_shift)
-
-    registered_raster = shift_x(raster, total_shift)
-    
-    return total_shift, raster, registered_raster
+    return total_shift
 
 def gen_raster(locs, times, amps, geom, direction):
     """
@@ -102,7 +111,7 @@ def gen_raster(locs, times, amps, geom, direction):
     return raster/raster_count
 
 
-def poisson_denoising(z, sigma=0.1, h=1.,  
+def poisson_denoising(z, sigma=0.1, h=1., scale=5, 
                       estimate_sig=False, fast_mode=True, multichannel=False,
                      patch_size=5,patch_distance=5):
     """
@@ -116,7 +125,7 @@ def poisson_denoising(z, sigma=0.1, h=1.,
     z_anscombe = 2. * np.sqrt(minmax + (3. / 8.))
     
     if estimate_sig:
-        sigma = np.mean(estimate_sigma(z_anscombe, multichannel=multichannel))
+        sigma = np.mean(estimate_sigma(z_anscombe, multichannel=multichannel)) * scale
         print("estimated sigma: {}".format(sigma))
     # Gaussian denoising
     z_anscombe_denoised = denoise_nl_means(z_anscombe, h=h*sigma, sigma=sigma,
@@ -182,6 +191,23 @@ def calc_displacement_matrix_raster(raster, nbins=1, disp = 400, step_size = 1, 
     torch.cuda.empty_cache()
     return displacement
 
+def calc_displacement_matrix_raster_dft(w_raster, S):
+    
+    D, T = w_raster.shape
+    displacement_matrix = np.zeros((T,T))
+    error_mat = np.zeros((T,T))
+    
+    for i in notebook.tqdm(range(T)):
+        for j in range(T):
+            if S[i,j] == 0:
+                continue
+            
+            shift, error, diffphase = phase_cross_correlation(w_raster[:,i], w_raster[:,j])
+            displacement_matrix[i,j] = shift
+            error_mat[i,j] = error
+            
+    return displacement_matrix, error_mat
+
 def calc_displacement(displacement, n_iter = 1000):
     """
     Calculates the displacement estimate given the displacement matrix (decentralized registration)
@@ -210,6 +236,31 @@ def calc_displacement(displacement, n_iter = 1000):
     del displacement
     torch.cuda.empty_cache()
     return disp
+
+def calc_displacement_robust(displacement_matrix, 
+                             error_mat, 
+                             S, 
+                             error_sigma, 
+                             time_sigma, 
+                             robust_regression_sigma, n_iter=20):
+    error_mat_S = error_mat[np.where(S != 0)]
+    W1 = np.exp(-((error_mat_S-error_mat_S.min())/(error_mat_S.max()-error_mat_S.min()))/error_sigma)
+
+    W2 = np.exp(-squareform(pdist(np.arange(error_mat.shape[0])[:,None]))/time_sigma)
+    W2 = W2[np.where(S != 0)]
+
+    W = (W2*W1)[:,None]
+    
+    I, J = np.where(S != 0)
+    V = displacement_matrix[np.where(S != 0)]
+    M = csr_matrix((np.ones(I.shape[0]), (np.arange(I.shape[0]),I)))
+    N = csr_matrix((np.ones(I.shape[0]), (np.arange(I.shape[0]),J)))
+    A = M - N
+    idx = np.ones(A.shape[0]).astype(bool)
+    for i in notebook.tqdm(range(n_iter)):
+        p = lsqr(A[idx].multiply(W[idx]), V[idx]*W[idx][:,0])[0]
+        idx = np.where(np.abs(zscore(A@p-V)) <= robust_regression_sigma)
+    return p
 
 def shift_x(x, shift_amt):
     """
@@ -254,9 +305,28 @@ def save_registered_raster(raster_sh, i, output_directory):
     plt.savefig(fname,bbox_inches='tight')
     plt.close()
     
-def decentralized_registration(raster, win_num=1, reg_block_num=1, iter_num=4):
+def get_subsampling_matrix(rate, T):
+    T = int(T) # make sure it's int
+    S = np.zeros((T,T))
+    p = np.log(T)/T
+    while S.sum() < T*T*p:
+        r = np.random.permutation(np.arange(T))
+        S[np.arange(T),r] = 1
+    S = np.bitwise_or(S.astype(bool), S.T.astype(bool)).astype(int)
+    return S
+    
+def decentralized_registration(raster, 
+                               win_num=1, 
+                               reg_block_num=1, 
+                               iter_num=4, 
+                               fast_mode=True,
+                               robust_mode=True,
+                               subsampling_rate=1.,
+                               error_sigma=0.1,
+                               time_sigma=1,
+                               robust_regression_sigma=1):
     """
-    Decentralized registration
+    Image-based Decentralized registration
     Input: raster plot (poisson denoised)
     Output: displacement estimate
 
@@ -274,6 +344,10 @@ def decentralized_registration(raster, win_num=1, reg_block_num=1, iter_num=4):
             window = get_gaussian_window(D, T, locs[i], scale=D/(0.5*win_num))
             window_list.append(window)
     window_sum = np.sum(np.asarray(window_list), axis=0)
+    
+    # get subsampling matrix, if rate < 1
+    if subsampling_rate < 1:
+        S = get_subsampling_matrix(subsampling_rate, T)
 
     shifts = np.zeros((win_num, T))
     total_shift = np.zeros_like(raster)
@@ -283,7 +357,7 @@ def decentralized_registration(raster, win_num=1, reg_block_num=1, iter_num=4):
     reg_block_num += 1
     blocks = np.linspace(0, D, reg_block_num, dtype=np.int64)
     
-    output_directory = os.path.join('.', "decentralized_raster")
+    output_directory = os.path.join('.', "image_based_registered_raster")
     if not os.path.exists(output_directory):
         os.makedirs(output_directory)
         
@@ -295,9 +369,18 @@ def decentralized_registration(raster, win_num=1, reg_block_num=1, iter_num=4):
         
         for j, w in enumerate(window_list):
             w_raster = w*raster_i
-            displacement_matrix = calc_displacement_matrix_raster((w_raster).T[:,np.newaxis,:])
-            np.save('displacement_matrix.npy', displacement_matrix)
-            disp = calc_displacement(displacement_matrix)
+            if fast_mode:
+                displacement_matrix = calc_displacement_matrix_raster((w_raster).T[:,np.newaxis,:])
+            else:
+                displacement_matrix, error_mat = calc_displacement_matrix_raster_dft(w_raster, S)
+                            
+            if robust_mode:
+                disp = calc_displacement_robust(displacement_matrix, error_mat, 
+                                                S, error_sigma,
+                                                time_sigma, robust_regression_sigma)
+            else:
+                disp = calc_displacement(displacement_matrix)   
+                
             shift_amt += w * disp[np.newaxis,:]
             shifts[j] += disp
             
