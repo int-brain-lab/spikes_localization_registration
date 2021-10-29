@@ -221,7 +221,7 @@ def filter_standardize_batch(batch_id, bin_file, dtype_str, rec_len, sampling_ra
         ts, left_buffer_size, right_buffer_size = read_data_batch(bin_file, batch_id, rec_len, sampling_rate, n_sec_chunk, spike_size_nn, geom_array, dtype_str, add_buffer=True)
         ts = _butterworth(ts, low_frequency, high_factor,
                               order, sampling_rate)
-        ts = ts[left_buffer_size:-right_buffer_size]
+        ts = ts[left_buffer_size:ts.shape[0]-right_buffer_size]
     else:
         ts, left_buffer_size, right_buffer_size = read_data_batch(bin_file, batch_id, rec_len, sampling_rate, n_sec_chunk, spike_size_nn, geom_array, dtype_str, add_buffer=False)
 
