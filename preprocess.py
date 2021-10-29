@@ -292,13 +292,10 @@ def get_std(ts,
 
 def merge_filtered_files(filtered_location, output_directory):
 
-    logger = logging.getLogger(__name__)
-
     filenames = os.listdir(filtered_location)
     filenames_sorted = sorted(filenames)
 
     f_out = os.path.join(output_directory, "standardized.bin")
-    logger.info('...saving standardized file: %s', f_out)
 
     f = open(f_out, 'wb')
     for fname in filenames_sorted:
