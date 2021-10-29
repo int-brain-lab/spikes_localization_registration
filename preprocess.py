@@ -90,7 +90,7 @@ def read_data_batch(bin_file, batch_id, rec_len, sampling_rate, n_sec_chunk, spi
         left_buffer_size = 0 
         right_buffer_size = 0
 
-    return data, left_buffer_size, right_buffer_size
+    return data, buffer_templates, buffer_templates
 
 def _butterworth(ts, low_frequency, high_factor, order, sampling_frequency):
     """Butterworth filter
@@ -246,7 +246,6 @@ def filter_standardize_batch(batch_id, bin_file, dtype_str, rec_len, sampling_ra
     #f.write(ts.astype(out_dtype))
 
 
-
 def get_std(ts,
             sampling_frequency,
             fname,
@@ -306,8 +305,6 @@ def merge_filtered_files(filtered_location, output_directory):
         res = np.load(os.path.join(filtered_location, fname))
         res.tofile(f)
         os.remove(os.path.join(filtered_location, fname))
-
-
 
 #### PARAMS ####
 raw_data_path = 'non_standardized.bin'
