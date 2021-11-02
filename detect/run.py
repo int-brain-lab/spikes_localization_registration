@@ -149,10 +149,10 @@ def read_data_batch(bin_file, batch_id, rec_len, sampling_rate, n_sec_chunk, spi
 
         # if end is above rec_len, put it back to rec_len and and zeros buffer
         if data_end > rec_len*sampling_rate:
-            right_buffer_size = data_end - rec_len*sampling_rate
-            data_end = rec_len*sampling_rate
+            right_buffer_size = int(data_end - rec_len*sampling_rate)
+            data_end = int(rec_len*sampling_rate)
         else:
-            right_buffer_size = 0
+            right_buffer_size = int(0)
 
     #data_start= int(data_start)
     #data_end = int(data_end)
