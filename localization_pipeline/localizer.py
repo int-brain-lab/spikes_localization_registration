@@ -19,7 +19,7 @@ class LOCALIZER(object):
         self.multi_processing = multi_processing
         self.n_processors = n_processors
         self.spike_size = spike_size
-        self.geom_array = np.load(geom_path)
+        self.geom_array = geom_path if isinstance(geom_path, np.ndarray) else np.load(geom_path)
         self.sampling_rate = sampling_rate
         self.n_channels = self.geom_array.shape[0]
         self.denoiser_weights = denoiser_weights
