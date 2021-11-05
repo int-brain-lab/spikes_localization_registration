@@ -167,7 +167,7 @@ class LOCALIZER(object):
                     output = optim_ls.least_squares(self.minimize_ls, x0=[results_x_mean[i], 0, 21, 1000], bounds = ([-100, -100, 0, 0], [132, 100, 250, 10000]), args=(wfs_0[:, channels_wfs].T, results_z_mean[i], channels[channels_wfs]))['x']
 
                     results_x[i] = output[0]
-                    results_z[i] = self.geom_array[channels[mc], 1] + output[1] 
+                    results_z[i] = results_z_mean[i] + output[1] 
                     results_alpha[i] = output[3]
                     results_y[i] = np.abs(output[2]) #max(25, (output[2]/wfs_0.ptp(0)[channels_wfs].max() - ((CONFIG.geom[channels[mc]] - [output[0] , CONFIG.geom[channels[mc], 1] + output[1]])**2).sum()).mean())
                     results_spread[i] = (wfs_0.ptp(0)[channels_wfs]*((self.geom_array[channels[channels_wfs]] - [results_x[i], results_z[i]])**2).sum(1)).sum()/wfs_0.ptp(0)[channels_wfs].sum()
