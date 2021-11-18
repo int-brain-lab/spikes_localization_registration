@@ -79,7 +79,7 @@ def run_icp(pcs, win_num, geomarray, grid, grid_step=25,
     if subsampling_rate < 1:
         S = get_subsampling_matrix(subsampling_rate, T)
     else:
-        S = np.zeros((T,T))
+        S = np.ones((T,T))
         
     displacement_matrix = np.zeros((win_num,T,T))
     loss = defaultdict(list)
