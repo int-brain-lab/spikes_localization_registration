@@ -5,6 +5,7 @@ __pycache__/
 
 # C extensions
 *.so
+subtraction_pipeline/ibme_fast_raster.c
 
 # Distribution / packaging
 .Python
@@ -127,3 +128,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# mac
+**/.DS_Store
