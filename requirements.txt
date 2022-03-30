@@ -1,3 +1,6 @@
+PyWavelets
 cython
+ibllib
 parmap
+scikit-image
 torch

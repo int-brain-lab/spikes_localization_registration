@@ -1,5 +1,13 @@
 # Localizing NP detected spikes and registering raw data
 
+## Installation
+There are cython extensions !!!
+```shell
+pip instal cython
+python3 setup.py build_ext --inplace
+pip install -e .
+```
+
 ## This repository provides code for localizing the spikes detected in Neuropixels recordings, estimating motion from localization results, and tools for visualizing and evaluating the output of any spike sorter.
 
 ### Detection : 
