@@ -10,6 +10,7 @@ See the documentation of `subtract.subtraction` for lots of detail.
 """
 
 from pathlib import Path
+import h5py
 from spikeutils import run_cbin_ibl
 SCRATCH_DIR = Path.home().joinpath('scratch')
 
@@ -19,4 +20,3 @@ cbin_file = Path("/datadisk/Data/spike_sorting/benchmark/raw/8ca1a850-26ef-42be-
 scratch_dir = SCRATCH_DIR.joinpath(cbin_file.parts[-2])
 standardized_file = scratch_dir.joinpath(f"{cbin_file.stem}.normalized.bin")
 h5_file = run_cbin_ibl(cbin_file, standardized_file, n_jobs=8, t_start=100, t_end=150, save_residual=False)
-
