@@ -10,10 +10,13 @@ The goal is to benchmark the spike detector
 from pathlib import Path
 
 import numpy as np
+import matplotlib.pyplot as plt
+import h5py
 import scipy
 import torch
 import pandas as pd
-import matplotlib.pyplot as plt
+import shutil
+import tqdm
 
 from ibllib.dsp import voltage
 from ibllib.ephys.neuropixel import trace_header
@@ -27,6 +30,68 @@ from detect.run import find_channel_neighbors, make_channel_index
 from detect.deduplication import deduplicate_gpu
 import detect.detector
 from localization_pipeline.denoiser import Denoise
+from subtraction_pipeline import subtract, ibme
+
+
+def run_cbin_ibl(cbin_file, standardized_file, t_start=0, t_end=None, **kwargs):
+    """
+    Pipelines:
+    -   destriping
+    -   subtraction / localisation
+    -   registration
+    Prototype for reproducible datasets to run on parede servers
+    """
+    cbin_file = Path(cbin_file)
+    standardized_file = Path(standardized_file)
+    sr = spikeglx.Reader(cbin_file)
+    h = sr.geometry
+    if not standardized_file.exists():
+        batch_size_secs = 1
+        batch_intervals_secs = 50
+        # scans the file at constant interval, with a demi batch starting offset
+        nbatches = int(np.floor((sr.rl - batch_size_secs) / batch_intervals_secs - 0.5))
+        wrots = np.zeros((nbatches, sr.nc - sr.nsync, sr.nc - sr.nsync))
+        for ibatch in tqdm.trange(nbatches, desc="destripe batches"):
+            ifirst = int((ibatch + 0.5) * batch_intervals_secs * sr.fs + batch_intervals_secs)
+            ilast = ifirst + int(batch_size_secs * sr.fs)
+            sample = voltage.destripe(sr[ifirst:ilast, :-sr.nsync].T, fs=sr.fs, neuropixel_version=1)
+            np.fill_diagonal(wrots[ibatch, :, :], 1 / voltage.rms(sample) * sr.sample2volts[:-sr.nsync] )
+
+        wrot = np.median(wrots, axis=0)
+        voltage.decompress_destripe_cbin(
+            sr.file_bin, h=h, wrot=wrot, output_file=standardized_file, dtype=np.float32, nc_out=sr.nc - sr.nsync)
+        # also copy the companion meta-data file
+        shutil.copy(sr.file_meta_data, standardized_file.parent.joinpath(f"{sr.file_meta_data.stem}.normalized.meta"))
+
+    sub_h5 = standardized_file.parent.joinpath(f"subtraction_{standardized_file.stem}_t_{t_start}_{t_end}.h5")
+    if sub_h5.exists():
+        return sub_h5
+    sub_h5 = subtract.subtraction(standardized_file, standardized_file.parent, geom=sr.geometry,
+                                  t_start=t_start, t_end=t_end, **kwargs)
+
+    # -- registration
+    with h5py.File(sub_h5, "r+") as h5:
+        samples = h5["spike_index"][:, 0] - h5["start_sample"][()]
+        z_abs = h5["localizations"][:, 2]
+        maxptps = h5["maxptps"]
+
+        z_reg, dispmap = ibme.register_nonrigid(
+            maxptps,
+            z_abs,
+            samples / sr.fs,
+            robust_sigma=1,
+            rigid_disp=200,
+            disp=100,
+            denoise_sigma=0.1,
+            n_windows=10,
+            widthmul=0.5,
+        )
+        z_reg -= (z_reg - z_abs).mean()
+        dispmap -= dispmap.mean()
+
+        h5.create_dataset("z_reg", data=z_reg)
+        h5.create_dataset("dispmap", data=dispmap)
+    return sub_h5
 
 
 def plot_spikes_view_ephys(spikes, clusters, t0, nsecs, fs, rgb, label, eqcs):
@@ -149,6 +214,3 @@ def apply_ks2_whitening(raw, kwm, sr, channels):
     scaling = np.std(carbutt)  # choose and apply a constant scaling throughout
     ks2 = ks2 * np.std(carbutt) / np.std(ks2)
     return ks2
-
-
-

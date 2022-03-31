@@ -3,10 +3,12 @@
 ## Installation
 There are cython extensions !!!
 ```shell
-pip instal cython
+pip install cython
 python3 setup.py build_ext --inplace
 pip install -e .
 ```
+
+Warning: the `torch` installation may be trickly for newer GPUs that do not support the CUDA runtime 10.2. Please refer to the instructions on the PyTorch website if the install above provides error message related to `CUDA capability sm_86`. 
 
 ## This repository provides code for localizing the spikes detected in Neuropixels recordings, estimating motion from localization results, and tools for visualizing and evaluating the output of any spike sorter.
 

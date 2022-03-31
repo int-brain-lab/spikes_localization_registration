@@ -1,5 +1,6 @@
 PyWavelets
 cython
+h5py
 ibllib
 parmap
 scikit-image
