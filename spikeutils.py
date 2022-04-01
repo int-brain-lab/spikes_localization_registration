@@ -43,9 +43,11 @@ def run_cbin_ibl(cbin_file, standardized_file, t_start=0, t_end=None, **kwargs):
     """
     cbin_file = Path(cbin_file)
     standardized_file = Path(standardized_file)
+    standardized_dir = standardized_file.parent
     sr = spikeglx.Reader(cbin_file)
     h = sr.geometry
     if not standardized_file.exists():
+        standardized_dir.mkdir(exist_ok=True, parents=True)
         batch_size_secs = 1
         batch_intervals_secs = 50
         # scans the file at constant interval, with a demi batch starting offset
@@ -63,11 +65,10 @@ def run_cbin_ibl(cbin_file, standardized_file, t_start=0, t_end=None, **kwargs):
         # also copy the companion meta-data file
         shutil.copy(sr.file_meta_data, standardized_file.parent.joinpath(f"{sr.file_meta_data.stem}.normalized.meta"))
 
-    sub_h5 = standardized_file.parent.joinpath(f"subtraction_{standardized_file.stem}_t_{t_start}_{t_end}.h5")
+    sub_h5 = standardized_dir.joinpath(f"subtraction_{standardized_file.stem}_t_{t_start}_{t_end}.h5")
     if sub_h5.exists():
         return sub_h5
-    sub_h5 = subtract.subtraction(standardized_file, standardized_file.parent, geom=sr.geometry,
-                                  t_start=t_start, t_end=t_end, **kwargs)
+    sub_h5 = subtract.subtraction(standardized_file, standardized_file.parent, t_start=t_start, t_end=t_end, **kwargs)
 
     # -- registration
     with h5py.File(sub_h5, "r+") as h5:
