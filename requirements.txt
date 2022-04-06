@@ -5,3 +5,4 @@ ibllib
 parmap
 scikit-image
 torch
+viewephys

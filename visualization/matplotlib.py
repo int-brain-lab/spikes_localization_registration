@@ -1,6 +1,8 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
+from brainbox.plot import driftmap
+
 
 def plotlocs(
     x,
@@ -92,3 +94,47 @@ def plotlocs(
         aa.set_ylim([z.min() - 10, z.max() + 10])
     else:
         aa.set_ylim(zlim)
+
+    return fig
+
+
+def driftmaps(ss, output_dir=None, pid=""):
+    """
+    Makes raster plots for a dictionary of different spike sortings
+    ss: dictionary of spike sortings dicts
+        {'yas': {'spikes': ..., 'clusters':..., 'channels', ...}, ...}
+    """
+    figs = []
+    axs = []
+    for j, k in enumerate(ss):
+        fig, ax = plt.subplots(figsize=[12, 8])
+        figs.append(fig)
+        axs.append(ax)
+        nspikes = ss[k]['spikes']['times'].size
+        driftmap(ss[k]['spikes']['times'], ss[k]['spikes']['depths'], ax=ax, vmax=0.5, t_bin=.007, d_bin=10)
+        ax.set(title=f"{pid} {k} {nspikes} spikes")
+        if j > 0:
+            ax.sharex(axs[0])
+            ax.sharey(axs[0])
+        if output_dir:
+            fig.savefig(output_dir.joinpath(f"{pid}_raster_{k}.png"))
+    return figs
+
+
+def displacement_map(displacement, label="", xlim=None, ylim=None, ax=None, output_file=None,
+                     extent=None):
+    """
+    image display of displacement: dm shape ndephts, ntimes
+    """
+    DRIFT_V = [-25, 25]
+    if ax is None:
+        fig, ax = plt.subplots(figsize=[12, 8])
+    im = ax.imshow(displacement, aspect='auto', cmap='magma', vmin=DRIFT_V[0], vmax=DRIFT_V[1], extent=extent)
+    ax.set(xlim=xlim, ylim=ylim, title=f"{label} drift (um)",
+           ylabel='depth (um)', xlabel='time (secs)')
+    cax = ax.inset_axes([1.04, 0.2, 0.05, 0.6], transform=ax.transAxes)
+    fig.colorbar(im, ax=ax, cax=cax)
+    if output_file:
+        fig.savefig(output_file)
+    return fig
+

@@ -3,11 +3,10 @@ import scipy.signal
 from ibllib.ephys.neuropixel import trace_header
 from ibllib.dsp import cadzow
 
-FMAX = 7500
-RANK = 5
 h = trace_header(1)
 
-def cadzow_np1(wav, fs=30000):
+
+def cadzow_np1(wav, fs=30000, rank=5, niter=1, fmax=7500):
     """
     Apply Fxy rank-denoiser to a full recording of Neuropixel 1 probe geometry
     :param wav: ntr, ns
@@ -29,7 +28,7 @@ def cadzow_np1(wav, fs=30000):
     # ovx, nswx, npad = (int(8), int(16), int(0))
     nwinx = int(np.ceil((ntr + npad * 2 - ovx) / (nswx - ovx)))
     fscale = scipy.fft.rfftfreq(ns, d=1 / fs)
-    imax = np.searchsorted(fscale, FMAX)
+    imax = np.searchsorted(fscale, fmax)
     WAV = scipy.fft.rfft(wav[:, :])
     padgain = scipy.signal.windows.hann(npad * 2)[:npad]
     WAV = np.r_[np.flipud(WAV[1:npad + 1, :]) * padgain[:, np.newaxis],
@@ -54,7 +53,7 @@ def cadzow_np1(wav, fs=30000):
         T, it, itr, trcount = cadzow.trajectory(x=x[firstx:lastx], y=y[firstx:lastx])
         array = WAV[firstx:lastx, :]
         print(firstx, lastx, x[firstx:lastx].shape, WAV[firstx:lastx, :].shape, T.shape)
-        array = cadzow.denoise(array, x=x[firstx:lastx], y=y[firstx:lastx], r=RANK, imax=imax, niter=1)
+        array = cadzow.denoise(array, x=x[firstx:lastx], y=y[firstx:lastx], r=rank, imax=imax, niter=niter)
         WAV_[firstx:lastx, :] += array * gw[:, np.newaxis]
 
     WAV_ = WAV_[npad:-npad - 1]  # remove padding

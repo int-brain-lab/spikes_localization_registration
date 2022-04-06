@@ -10,21 +10,15 @@ The goal is to benchmark the spike detector
 from pathlib import Path
 
 import numpy as np
-import matplotlib.pyplot as plt
 import h5py
 import scipy
 import torch
-import pandas as pd
+import tqdm
 import shutil
 import tqdm
 
 from ibllib.dsp import voltage
-from ibllib.ephys.neuropixel import trace_header
 from ibllib.io import spikeglx
-import ibllib.ephys.spikes as spikes
-from brainbox.io.one import SpikeSortingLoader
-
-from viewephys.gui import viewephys
 
 from detect.run import find_channel_neighbors, make_channel_index
 from detect.deduplication import deduplicate_gpu
@@ -64,7 +58,6 @@ def run_cbin_ibl(cbin_file, standardized_file, t_start=0, t_end=None, **kwargs):
             sr.file_bin, h=h, wrot=wrot, output_file=standardized_file, dtype=np.float32, nc_out=sr.nc - sr.nsync)
         # also copy the companion meta-data file
         shutil.copy(sr.file_meta_data, standardized_file.parent.joinpath(f"{sr.file_meta_data.stem}.normalized.meta"))
-
     sub_h5 = standardized_dir.joinpath(f"subtraction_{standardized_file.stem}_t_{t_start}_{t_end}.h5")
     if sub_h5.exists():
         return sub_h5
@@ -93,6 +86,34 @@ def run_cbin_ibl(cbin_file, standardized_file, t_start=0, t_end=None, **kwargs):
         h5.create_dataset("z_reg", data=z_reg)
         h5.create_dataset("dispmap", data=dispmap)
     return sub_h5
+
+
+def h5_to_npy(h5_file, output_dir):
+    h5 = h5py.File(h5_file, "r")
+    to_keep = ['channel_index', 'dispmap', 'end_sample', 'first_channels', 'geom', 'localizations', 'maxptps',
+               'spike_index', 'start_sample', 'tpca_components', 'tpca_mean', 'z_reg']
+    output_dir.mkdir(exist_ok=True)
+    for k in h5.keys():
+        if k not in to_keep:
+            continue
+        np.save(output_dir.joinpath(f"{k}.npy"), h5[k])
+
+
+def load_npy_yasap(npy_dir, fs=30000, registration=False):
+    channels = {}
+    channels['lateral_um'], channels['axial_um'] = np.hsplit(np.load(npy_dir.joinpath("geom.npy")), 2)
+    spikes = {}
+    spikes['amps'] = np.load(npy_dir.joinpath("maxptps.npy"))
+    spikes['samples'] = np.load(npy_dir.joinpath("spike_index.npy"))[:, 0]
+    spikes['raw_channels'] = np.load(npy_dir.joinpath("spike_index.npy"))[:, 1]
+    spikes['times'] = spikes['samples'] / fs
+    if registration:
+        spikes['depths'] = np.load(npy_dir.joinpath("z_reg.npy"))
+    else:
+        loc = np.load(npy_dir.joinpath("localizations.npy"))
+        spikes['depths'] = loc[:, 2]
+
+    return spikes, channels
 
 
 def plot_spikes_view_ephys(spikes, clusters, t0, nsecs, fs, rgb, label, eqcs):
@@ -151,6 +172,33 @@ def init_detector(cbin_file):
 
 
     return detector, denoiser, params, channel_index
+
+
+def detections_f1_score(ta, xya, tb, xyb, t_thresh=20 / 30000, d_thresh=50):
+    """
+    Computes metrics to compare spike sorting detections from different runs / algorithms
+    ta / tb: np.array of spikes times
+    xya / xyb: np.array of coordinates (complex if 2d coordinates)
+    returns: a dictionary with metrics as keys
+    """
+    amatch = np.zeros(ta.size)
+    bmatch = np.zeros(tb.size)
+    for i in tqdm.tqdm(np.arange(ta.size)):
+        first, last = np.searchsorted(tb, ta[i] + np.array([-1, 1]) * t_thresh)
+        selb = np.arange(first, last)[np.abs(xya[i] - xyb[first:last]) <= d_thresh]
+
+        if selb.size:
+            amatch[i] = selb[0]
+            bmatch[selb] = i
+    fn = np.sum(amatch == 0)  # false negatives
+    tp = np.sum(bmatch != 0)  # true positives
+    fp = bmatch.size - tp  # false positives
+    precision = tp / (tp + fp)  # how many retrieved items are relevant
+    recall = tp / (tp + fn)  # how many relevant items are retrieved
+    f1 = tp / (tp + (fp + fn) / 2)
+    est = dict(fn=int(fn), tp=int(tp), fp=int(fp), precision=float(precision),
+               recall=float(recall), f1=float(f1), n=int(bmatch.size))
+    return est
 
 
 def detect_nn(data, detector, denoiser, channel_index, params):

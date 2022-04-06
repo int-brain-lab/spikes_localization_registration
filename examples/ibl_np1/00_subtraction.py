@@ -10,27 +10,24 @@ See the documentation of `subtract.subtraction` for lots of detail.
 """
 
 from pathlib import Path
-from spikeutils import run_cbin_ibl
+from spikeutils import run_cbin_ibl, h5_to_npy
 SCRATCH_DIR = Path.home().joinpath('scratch')
-
-
+SCRATCH_DIR = Path("/media/olivier/Seagate Expansion Drive/scratch")
+# SCRATCH_DIR = Path("/datadisk/scratch")
 # benchmarking datasets on ferret
-pid = "8ca1a850-26ef-42be-8b28-c2e2d12f06d6"
-cbin_file = Path(f"/datadisk/Data/spike_sorting/benchmark/raw/{pid}/_spikeglx_ephysData_g0_t0.imec0.ap.cbin")
-# RS datasets
-scratch_dir = SCRATCH_DIR.joinpath(cbin_file.parts[-2])
-standardized_file = scratch_dir.joinpath(f"{cbin_file.stem}.normalized.bin")
+pid = "8ca1a850-26ef-42be-8b28-c2e2d12f06d6"  # done !
+pid = "ce397420-3cd2-4a55-8fd1-5e28321981f4"  # done !
+pid = "8413c5c6-b42b-4ec6-b751-881a54413628"
+pid = "ce24bbe9-ae70-4659-9e9c-564d1a865de8"
 
-h5_file = run_cbin_ibl(cbin_file, standardized_file, n_jobs=8, t_start=100, t_end=150, save_residual=False)
+for pid in ["8413c5c6-b42b-4ec6-b751-881a54413628", "ce24bbe9-ae70-4659-9e9c-564d1a865de8"]:
+    OUTPUT_DIR = Path(f"/datadisk/Data/spike_sorting/benchmark/sorters/yasap/{pid}")
 
-# import h5py
-# import numpy as np
-# h5 = h5py.File(h5_file, "r")
-# [k for k in h5.keys()]
-# h5['cleaned_waveforms']
-# to_keep = ['channel_index', 'dispmap', 'end_sample', 'first_channels', 'geom', 'localizations', 'maxptps', 'spike_index',
-#  'start_sample', 'tpca_components', 'tpca_mean', 'z_reg']
-# for k in h5.keys():
-#     if k not in to_keep:
-#         continue
-#     np.save(scratch_dir.joinpath(f"{k}.npy"), h5[k])
+    cbin_file = next(Path(f"/datadisk/Data/spike_sorting/benchmark/raw/{pid}").glob("*.ap.cbin"))
+    # RS datasets
+    scratch_dir = SCRATCH_DIR.joinpath(cbin_file.parts[-2])
+    standardized_file = scratch_dir.joinpath(f"{cbin_file.stem}.normalized.bin")
+
+    h5_file = run_cbin_ibl(cbin_file, standardized_file, n_jobs=8, t_start=0, t_end=None, save_residual=False)
+
+    h5_to_npy(h5_file, output_dir=OUTPUT_DIR)
