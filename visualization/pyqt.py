@@ -43,6 +43,7 @@ def raw_data(pid, times=V_T0, channels=None, br=None, one=None, output_dir=None,
             rgb = tuple(np.r_[(np.array(sns.color_palette('bright')[i]) * 255).astype(np.uint8), 150])
             spikes = ss[k]['spikes']
             istart, iend = np.searchsorted(spikes['times'], t0 + np.array([0, 1]))
+            # here you can add some labels to color the spikes
             evs['destripe'].ctrl.add_scatter(
                 x=(spikes['times'][istart:iend] - t0) * 1e3,
                 y=spikes['raw_channels'][istart:iend],
