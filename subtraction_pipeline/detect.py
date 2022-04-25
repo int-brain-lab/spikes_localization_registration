@@ -16,6 +16,7 @@ import torch
 from scipy.signal import argrelmin
 from torch import nn
 import torch.nn.functional as F
+from copy import deepcopy
 
 
 MAXCOPY = 8
@@ -28,6 +29,7 @@ def detect_and_deduplicate(
     buffer_size,
     nn_detector=None,
     nn_denoiser=None,
+    denoiser_detector=None,
     spike_length_samples=121,
     device="cpu",
 ):
@@ -44,7 +46,7 @@ def detect_and_deduplicate(
         Either the original recording, or a torch version if we're
         on GPU.
     """
-    if nn_detector is None:
+    if nn_detector is None and denoiser_detector is None:
         spike_index, _ = voltage_detect_and_deduplicate(
             recording,
             threshold,
@@ -52,8 +54,7 @@ def detect_and_deduplicate(
             buffer_size,
             device=device,
         )
-    else:
-        assert nn_denoiser is not None
+    elif nn_detector is not None:
         spike_index, _ = nn_detect_and_deduplicate(
             recording,
             threshold,
@@ -64,6 +65,19 @@ def detect_and_deduplicate(
             spike_length_samples=121,
             device=device,
         )
+    elif denoiser_detector is not None:
+        times, chans, _ = denoiser_detect_dedup(
+            recording,
+            threshold,
+            denoiser_detector,
+            channel_index=channel_index,
+            device=device,
+        )
+        if len(times):
+            spike_index = np.c_[times.cpu().numpy(), chans.cpu().numpy()]
+            spike_index[:, 0] -= buffer_size
+        else:
+            return np.array([]), np.array([])
 
     if torch.is_tensor(spike_index):
         spike_index = spike_index.cpu().numpy()
@@ -200,7 +214,7 @@ def nn_detect_and_deduplicate(
     # threshold
     which = energy > energy_threshold
     if not which.any():
-        return [], []
+        return torch.tensor([]), torch.tensor([])
     spike_index_torch = spike_index_torch[which]
     energy = energy[which]
     # print("after", energy.shape, energy.min(), energy.mean(), energy.max())
@@ -240,15 +254,15 @@ def voltage_detect_and_deduplicate(
             order=5,
             device=device,
         )
-        if len(times):
+        if times.numel():
             spike_index = np.c_[times.cpu().numpy(), chans.cpu().numpy()]
             energy = energy.cpu().numpy()
         else:
-            return [], []
+            return np.array([]), np.array([])
     else:
         spike_index, energy = voltage_threshold(recording, threshold)
         if not len(spike_index):
-            return [], []
+            return np.array([]), np.array([])
         spike_index, energy = deduplicate_torch(
             spike_index,
             energy,
@@ -343,7 +357,8 @@ def torch_voltage_detect_dedup(
         threshold for -voltage.
     order : int
         How many temporal neighbors to compare with during argrelmin
-        / deduplication
+    max_window : int
+        How many temporal neighbors to compare with during dedup
     channel_index : ndarray
     device : string or torch device
 
@@ -363,7 +378,7 @@ def torch_voltage_detect_dedup(
     )
     max_energies, inds = F.max_pool2d_with_indices(
         neg_recording[None, None],
-        kernel_size=[2 * 5 + 1, 1],
+        kernel_size=[2 * order + 1, 1],
         stride=1,
         padding=[5, 0],
     )
@@ -377,8 +392,8 @@ def torch_voltage_detect_dedup(
     # voltage threshold
     max_energies_at_inds = max_energies.view(-1)[window_max_inds]
     which = torch.nonzero(max_energies_at_inds > threshold).squeeze()
-    if not which.size():
-        return [], [], []
+    if not which.numel():
+        return torch.tensor([]), torch.tensor([]), torch.tensor([])
 
     # -- unravel the spike index
     # (right now the indices are into flattened recording)
@@ -393,8 +408,8 @@ def torch_voltage_detect_dedup(
     compat_times = torch.nonzero(
         (0 < times) & (times < recording.shape[0] - 1)
     ).squeeze()
-    if not len(compat_times):
-        return [], [], []
+    if not compat_times.numel():
+        return torch.tensor([]), torch.tensor([]), torch.tensor([])
     times = times[compat_times]
     res_inds = which[compat_times]
     chans = window_max_inds[res_inds] % C
@@ -433,8 +448,209 @@ def torch_voltage_detect_dedup(
         dedup = torch.nonzero(
             energies >= max_energies[times, chans] - 1e-8
         ).squeeze()
-        if not len(dedup):
-            return [], [], []
+        if not dedup.numel():
+            return torch.tensor([]), torch.tensor([]), torch.tensor([])
+        times = times[dedup]
+        chans = chans[dedup]
+        energies = energies[dedup]
+
+    return times, chans, energies
+
+
+# -- denoiser-based nn detection
+
+
+class PeakToPeak(nn.Module):
+    __constants__ = ["dim"]
+    dim: int
+
+    def __init__(self, dim=-1):
+        super(PeakToPeak, self).__init__()
+        self.dim = dim
+
+    def forward(self, input):
+        return (
+            torch.max(input, dim=self.dim)[0]
+            - torch.min(input, dim=self.dim)[0]
+        )
+
+# a torch debugging classic
+# class Shape(nn.Module):
+#     def __init__(self, name):
+#         super(Shape, self).__init__()
+#         self.name = name
+#     def forward(self, input):
+#         print(self.name, input.shape)
+#         return input
+
+
+class DenoiserDetect(nn.Module):
+    def __init__(self, denoiser, output_t_range=(25, 60)):
+        super(DenoiserDetect, self).__init__()
+        denoiser = deepcopy(denoiser)
+        # -- turn the denoiser into a convolutional net
+        # convert linear head into a convolutional layer
+        # we just grab a portion of the denoiser output since not all
+        # of it is relevant for the PTP
+        t0, t1 = output_t_range
+        kernel_size = (
+            denoiser.out.out_features
+            - denoiser.conv1[0].kernel_size[0]
+            - denoiser.conv2[0].kernel_size[0]
+            + 2
+        )
+        self.conv_linear = nn.Conv1d(
+            in_channels=denoiser.conv2[0].out_channels,
+            out_channels=t1 - t0,
+            kernel_size=kernel_size,
+        )
+        # T x in_features = (in_chans * kernel_size)
+        W = denoiser.out.weight
+        W = W.reshape(
+            denoiser.out.out_features,
+            denoiser.conv2[0].out_channels,
+            kernel_size,
+        )
+        # outc x inc x kernel size
+        with torch.no_grad():
+            self.conv_linear.weight[:] = W[t0:t1].detach()
+            self.conv_linear.bias[:] = denoiser.out.bias[t0:t1].detach()
+
+        # feedforward convolutional arch with PTP head
+        self.ff = nn.Sequential(
+            # Shape("in"),
+            denoiser.conv1,
+            # Shape("after conv1"),
+            denoiser.conv2,
+            # self.denoiser.conv3,  # denoiser conv3 is unused...
+            # Shape("after conv2"),
+            self.conv_linear,
+            # Shape("after fake conv"),
+            PeakToPeak(1),
+            # Shape("after ptp"),
+        )
+
+    def forward(self, input):
+        return self.ff(input)
+
+    def forward_recording(self, recording_tensor):
+        # input is DxT
+        # just adds C dim. so we have Tx1xD, depth on the batch dim
+        return self.ff(recording_tensor.T[:, None, :]).T
+
+
+@torch.no_grad()
+def denoiser_detect_dedup(
+    recording,
+    ptp_threshold,
+    denoiser_detector,
+    order=5,
+    max_window=7,
+    channel_index=None,
+    device=None,
+):
+    """Denoiser-based thresholding detection and deduplication
+
+    Arguments
+    ---------
+    recording : ndarray, T x C
+    ptp_threshold : float
+        Should be >0
+    order : int
+        How many temporal neighbors to compare with during argrelmin
+    max_window : int
+        How many temporal neighbors to compare with during dedup
+    channel_index : ndarray
+    device : string or torch device
+
+    Returns
+    -------
+    times, chans, energies
+        Such that spike_index can be created as
+        np.c_[times.cpu().numpy(), chans.cpu().numpy()]
+    """
+    T, C = recording.shape
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # -- torch argrelmin
+    ptps = denoiser_detector.forward_recording(
+        torch.as_tensor(recording, device=device, dtype=torch.float)
+    )
+    max_energies, inds = F.max_pool2d_with_indices(
+        ptps[None, None],
+        kernel_size=[2 * order + 1, 1],
+        stride=1,
+        padding=[5, 0],
+    )
+    max_energies = max_energies[0, 0]
+    inds = inds[0, 0]
+    # torch `inds` gives loc of argmax at each position
+    # find those which actually *were* the max
+    unique_inds = inds.unique()
+    window_max_inds = unique_inds[inds.view(-1)[unique_inds] == unique_inds]
+
+    # voltage threshold
+    max_energies_at_inds = max_energies.view(-1)[window_max_inds]
+    which = torch.nonzero(max_energies_at_inds > ptp_threshold).squeeze()
+    if not which.numel():
+        return torch.tensor([]), torch.tensor([]), torch.tensor([])
+
+    # -- unravel the spike index
+    # (right now the indices are into flattened recording)
+    times = torch.div(window_max_inds, C, rounding_mode="floor")
+    times = times[which]
+
+    # TODO
+    # this is for compatibility with scipy argrelmin, which does not allow
+    # minima at the boundary. unclear if it's necessary to keep this.
+    # I think likely not since we throw away spikes detected in the
+    # buffer anyway?
+    compat_times = torch.nonzero(
+        (0 < times) & (times < recording.shape[0] - 1)
+    ).squeeze()
+    if not compat_times.numel():
+        return torch.tensor([]), torch.tensor([]), torch.tensor([])
+    times = times[compat_times]
+    res_inds = which[compat_times]
+    chans = window_max_inds[res_inds] % C
+    energies = max_energies_at_inds[res_inds]
+
+    # -- deduplication
+    # We deduplicate if the channel index is provided.
+    if channel_index is not None:
+        channel_index = torch.tensor(
+            channel_index, device=device, dtype=torch.long
+        )
+
+        # -- temporal max pool
+        # still not sure why we can't just use `max_energies` instead of making
+        # this sparsely populated array, but it leads to a different result.
+        max_energies[:] = 0
+        max_energies[times, chans] = energies
+        max_energies = F.max_pool2d(
+            max_energies[None, None],
+            kernel_size=[2 * max_window + 1, 1],
+            stride=1,
+            padding=[max_window, 0],
+        )[0, 0]
+
+        # -- spatial max pool with channel index
+        # batch size heuristic, see __doc__
+        max_neighbs = channel_index.shape[1]
+        batch_size = int(np.ceil(T / (max_neighbs / MAXCOPY)))
+        for bs in range(0, T, batch_size):
+            be = min(T, bs + batch_size)
+            max_energies[bs:be] = torch.max(
+                F.pad(max_energies[bs:be], (0, 1))[:, channel_index], 2
+            )[0]
+
+        # -- deduplication
+        dedup = torch.nonzero(
+            energies >= max_energies[times, chans] - 1e-8
+        ).squeeze()
+        if not dedup.numel():
+            return torch.tensor([]), torch.tensor([]), torch.tensor([])
         times = times[dedup]
         chans = chans[dedup]
         energies = energies[dedup]
