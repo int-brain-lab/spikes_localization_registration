@@ -7,12 +7,16 @@ from ibllib.ephys import neuropixel
 from ibllib.io import spikeglx
 import localization_pipeline.localizer
 from localization_pipeline.localizer import LOCALIZER
+from localization_pipeline.merge_results import get_merged_arrays
 
 REPO_PATH = Path(localization_pipeline.localizer.__file__).parents[1]
 pids = ['8ca1a850-26ef-42be-8b28-c2e2d12f06d6', '8413c5c6-b42b-4ec6-b751-881a54413628', 'ce24bbe9-ae70-4659-9e9c-564d1a865de8', 'ce397420-3cd2-4a55-8fd1-5e28321981f4']
-pid = pids[2]
+pid = pids[3]
 
 standardized_file = next(Path(f"/datadisk/Data/spike_sorting/benchmark/raw/{pid}/").glob("*.ap.normalized.bin"))
+directory_localisation = standardized_file.parent.joinpath('localisation')
+directory_localisation_merged = standardized_file.parent.joinpath('localisation_merged')
+
 
 h = neuropixel.trace_header(version=1)
 residual_file = standardized_file
@@ -39,8 +43,11 @@ params = dict(
 localizer_obj = LOCALIZER(**params)
 
 localizer_obj.load_denoiser()
-output_directory = standardized_file.parent.joinpath('localisation')
-if not output_directory.exists():
-    output_directory.mkdir(exist_ok=True)
+
+if not directory_localisation.exists():
+    directory_localisation.mkdir(exist_ok=True)
     for i in tqdm.tqdm(range(int(np.ceil(sr.rl)))):
-        _ = localizer_obj.get_estimate(i, threshold=6, output_directory=output_directory)
+        _ = localizer_obj.get_estimate(i, threshold=6, output_directory=directory_localisation)
+
+directory_localisation_merged.mkdir(exist_ok=True, parents=True)
+get_merged_arrays(directory_localisation, directory_localisation_merged, 1000)
