@@ -7,7 +7,7 @@ import time
 import torch
 
 from collections import namedtuple
-from ibllib.io.spikeglx import _geometry_from_meta, read_meta_data
+from spikeglx import _geometry_from_meta, read_meta_data
 from pathlib import Path
 from scipy.spatial.distance import pdist, squareform
 from sklearn.decomposition import PCA

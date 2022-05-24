@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 from tqdm.auto import trange
 
-from ibllib.dsp import voltage
+from neurodsp import voltage, utils
 from ibllib.io import spikeglx
 
 
@@ -17,19 +17,24 @@ args = ap.parse_args()
 
 
 binary = Path(args.binary)
+
+print("Destriping", binary)
+
 folder = binary.parent
 standardized_file = folder / f"{binary.stem}.normalized.bin"
 
 # run destriping
 sr = spikeglx.Reader(binary)
+print(sr.nc, sr.nsync, sr.rl)
 h = sr.geometry
 if not standardized_file.exists():
     batch_size_secs = 1
     batch_intervals_secs = 50
     # scans the file at constant interval, with a demi batch starting offset
     nbatches = int(
-        np.floor((sr.rl - batch_size_secs) / batch_intervals_secs - 0.5)
+        np.ceil((sr.rl - batch_size_secs) / batch_intervals_secs - 0.5)
     )
+    print(nbatches)
     wrots = np.zeros((nbatches, sr.nc - sr.nsync, sr.nc - sr.nsync))
     for ibatch in trange(nbatches, desc="destripe batches"):
         ifirst = int(
@@ -42,7 +47,7 @@ if not standardized_file.exists():
         )
         np.fill_diagonal(
             wrots[ibatch, :, :],
-            1 / voltage.rms(sample) * sr.sample2volts[: -sr.nsync],
+            1 / utils.rms(sample) * sr.sample2volts[: -sr.nsync],
         )
 
     wrot = np.median(wrots, axis=0)

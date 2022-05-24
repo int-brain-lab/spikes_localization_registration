@@ -12,7 +12,7 @@ import os
 import argparse
 import h5py
 import numpy as np
-from spike_psvae import subtract, ibme
+from subtraction_pipeline import subtract, ibme
 
 
 # -- args
@@ -167,3 +167,4 @@ if not args.nolocalize and not args.noregister:
             dispmap -= dispmap.mean()
             h5.create_dataset("z_reg", data=z_reg)
             h5.create_dataset("dispmap", data=dispmap)
+
