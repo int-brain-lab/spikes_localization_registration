@@ -5,6 +5,8 @@ import boto3
 from one.api import ONE
 from pathlib import Path
 
+# aws s3 sync s3://ibl-brain-wide-map-private/data/etls/yass/ /datadisk/Data/spike_sorting/re_datasets/
+
 one = ONE()
 PRIVATE_REPO_NAME = 'ibl-brain-wide-map-private'
 DATA_DIR = Path(f"/datadisk/Data/spike_sorting/re_datasets")  # YOUR LOCAL PATH
