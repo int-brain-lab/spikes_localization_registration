@@ -183,28 +183,15 @@ def subtraction(
         geom, dedup_spatial_radius, steps=2
     )
     nn_channel_index = make_channel_index(geom, dedup_spatial_radius, steps=1)
-    if neighborhood_kind == "box":
-        extract_channel_index = make_channel_index(
-            geom, extract_box_radius, distance_order=False, p=1
-        )
-        # use radius-based localization neighborhood
-        loc_n_chans = None
-        loc_radius = localize_radius
-    elif neighborhood_kind == "firstchan":
-        extract_channel_index = []
-        for c in range(n_channels):
-            low = max(0, c - extract_firstchan_n_channels // 2)
-            low = min(n_channels - extract_firstchan_n_channels, low)
-            extract_channel_index.append(
-                np.arange(low, low + extract_firstchan_n_channels)
-            )
-        extract_channel_index = np.array(extract_channel_index)
-
-        # use old firstchan style localization neighborhood
-        loc_n_chans = localize_firstchan_n_channels
-        loc_radius = None
-    else:
-        assert False
+    extract_channel_index, loc_n_chans, loc_radius = get_channel_index_neighborhood(
+        geom,
+        extract_box_radius,
+        extract_firstchan_n_channels,
+        neighborhood_kind,
+        loc_n_chans=localize_firstchan_n_channels,
+        loc_radius=localize_radius,
+        box_p=2,
+    )
 
     # helper data structure for radial enforce decrease
     if enforce_decrease_kind == "radial":
@@ -803,6 +790,119 @@ def train_pca(
     return tpca
 
 
+# -- standalone function for detecting + localizing an input array
+
+def subtract_and_localize(
+    raw,
+    geom,
+    extract_radius=200.,
+    loc_radius=100.,
+    dedup_spatial_radius=70.,
+    thresholds=[12, 10, 8, 6, 5],
+    radial_parents=None,
+    tpca=None,
+    device=None,
+    probe="np1",
+    trough_offset=42,
+    spike_length_samples=121,
+    loc_workers=1,
+):
+    # we will run in this buffer and return it after subtraction
+    residual = raw.copy()
+
+    # probe geometry helper structures
+    dedup_channel_index = make_channel_index(
+        geom, dedup_spatial_radius, steps=2
+    )
+    extract_channel_index, loc_n_chans, loc_radius = get_channel_index_neighborhood(
+        geom,
+        extract_radius,
+        None,
+        "box",
+        loc_radius=loc_radius,
+    )
+    if radial_parents is None:
+        # this can be slow to compute, so could be worth pre-computing it
+        radial_parents = denoise.make_radial_order_parents(
+            geom, extract_channel_index, n_jumps_per_growth=1, n_jumps_parent=3
+        )
+
+    # load neural nets
+    if device is None:
+        device = "cuda" if torch.cuda.is_available else "cpu"
+    device = torch.device(device)
+    denoiser = denoise.SingleChanDenoiser()
+    denoiser.load()
+    denoiser.to(device)
+    dn_detector = detect.DenoiserDetect(denoiser)
+    dn_detector.to(device)
+
+    subtracted_wfs = []
+    spike_index = []
+    for threshold in thresholds:
+        subwfs, residual, spind = detect_and_subtract(
+            residual,
+            threshold,
+            radial_parents,
+            tpca,
+            dedup_channel_index,
+            extract_channel_index,
+            detector=None,
+            denoiser=denoiser,
+            denoiser_detector=dn_detector,
+            trough_offset=trough_offset,
+            spike_length_samples=spike_length_samples,
+            device=device,
+            probe=probe,
+        )
+        if len(spind):
+            subtracted_wfs.append(subwfs)
+            spike_index.append(spind)
+
+    subtracted_wfs = np.concatenate(subtracted_wfs, axis=0)
+    spike_index = np.concatenate(spike_index, axis=0)
+
+    # sort so time increases
+    sort = np.argsort(spike_index[:, 0])
+    subtracted_wfs = subtracted_wfs[sort]
+    spike_index = spike_index[sort]
+
+    # "collision-cleaned" wfs
+    cleaned_wfs = read_waveforms(
+        residual,
+        spike_index,
+        spike_length_samples,
+        extract_channel_index,
+        trough_offset=trough_offset,
+        buffer=0,
+    )
+    cleaned_wfs = full_denoising(
+        cleaned_wfs + subtracted_wfs,
+        spike_index[:, 1],
+        extract_channel_index,
+        radial_parents,
+        probe=probe,
+        tpca=tpca,
+        device=device,
+        denoiser=denoiser,
+    )
+
+    # localize
+    locptps = cleaned_wfs.ptp(1)
+    xs, ys, z_rels, z_abss, alphas = localize_index.localize_ptps_index(
+        locptps,
+        geom,
+        spike_index[:, 1],
+        extract_channel_index,
+        n_channels=loc_n_chans,
+        radius=loc_radius,
+        n_workers=loc_workers,
+        pbar=False,
+    )
+
+    return spike_index, subtracted_wfs, xs, ys, z_abss, alphas
+
+
 # -- denoising / detection helpers
 
 
@@ -1189,6 +1289,43 @@ def make_channel_index(geom, radius, steps=1, distance_order=True, p=2):
         channel_index[current, : ch_idx.shape[0]] = ch_idx
 
     return channel_index
+
+
+def get_channel_index_neighborhood(
+    geom,
+    extract_radius,
+    extract_n_chans,
+    neighborhood_kind,
+    loc_n_chans=20,
+    loc_radius=100.,
+    box_p=2,
+):
+    n_channels = geom.shape[0]
+
+    if neighborhood_kind == "box":
+        channel_index = make_channel_index(
+            geom, extract_radius, distance_order=False, p=box_p
+        )
+        # use radius-based localization neighborhood
+        loc_n_chans = None
+        loc_radius = loc_radius
+    elif neighborhood_kind == "firstchan":
+        channel_index = []
+        for c in range(n_channels):
+            low = max(0, c - extract_n_chans // 2)
+            low = min(n_channels - extract_n_chans, low)
+            channel_index.append(
+                np.arange(low, low + extract_n_chans)
+            )
+        channel_index = np.array(channel_index)
+
+        # use old firstchan style localization neighborhood
+        loc_n_chans = loc_n_chans
+        loc_radius = None
+    else:
+        assert False
+
+    return channel_index, loc_n_chans, loc_radius
 
 
 # -- data loading helpers
