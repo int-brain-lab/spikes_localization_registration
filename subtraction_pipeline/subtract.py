@@ -900,7 +900,7 @@ def subtract_and_localize(
         pbar=False,
     )
 
-    return spike_index, subtracted_wfs, xs, ys, z_abss, alphas
+    return spike_index, subtracted_wfs, cleaned_wfs, xs, ys, z_abss, alphas
 
 
 # -- denoising / detection helpers
