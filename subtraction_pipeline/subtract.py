@@ -1,5 +1,6 @@
 import concurrent.futures
 import contextlib
+from pathlib import Path
 import h5py
 import numpy as np
 import signal
@@ -7,12 +8,10 @@ import time
 import torch
 
 from collections import namedtuple
-from spikeglx import _geometry_from_meta, read_meta_data
-from pathlib import Path
 from scipy.spatial.distance import pdist, squareform
 from sklearn.decomposition import PCA
 from tqdm.auto import tqdm
-
+import spikeglx
 from . import denoise, detect, localize_index
 
 
@@ -1335,7 +1334,7 @@ def read_geom_from_meta(bin_file):
     meta = Path(bin_file.parent) / (bin_file.stem + ".meta")
     if not meta.exists():
         raise ValueError("Expected", meta, "to exist.")
-    header = _geometry_from_meta(read_meta_data(meta))
+    header = spikeglx.read_geometry(meta)
     geom = np.c_[header["x"], header["y"]]
     return geom
 
@@ -1355,8 +1354,6 @@ def read_data(bin_file, dtype, s_start, s_end, n_channels):
 
 
 # -- utils
-
-
 class timer:
     def __init__(self, name="timer"):
         self.name = name

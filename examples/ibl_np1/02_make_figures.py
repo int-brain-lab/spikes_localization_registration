@@ -10,7 +10,8 @@ from iblutil.numerical import ismember2d
 from one.api import ONE
 from brainbox.io.one import SpikeSortingLoader
 from spikeutils import load_npy_yasap
-from ibllib.ephys.neuropixel import trace_header
+from neuropixel import trace_header
+from one.alf.spec import is_uuid_string
 
 from visualization.matplotlib import plotlocs, driftmaps, displacement_map
 from visualization.pyqt import raw_data
@@ -19,31 +20,31 @@ h = trace_header(version=1)
 SCRATCH_DIR = Path.home().joinpath('scratch')
 V_T0 = [60 * 10, 60 * 30, 60 * 50]  # raw data samples at 10, 30, 50 min in
 FIG_DIR = Path(f"/datadisk/team_drives/WG-Neural-Analysis/Spike-Sorting-Analysis/re_datasets")
+YAS_ROOT_DIR = Path(f"/datadisk/Data/spike_sorting/re_datasets")  # contains npy output of localisation / registrtaio
 logger = logging.getLogger('ibllib')
-AWS_ROOT_PATH = Path('data')
+AWS_ROOT_PATH = Path('data')  # do not change -
+
 
 one = ONE()
 # pids = list(np.load("/home/olivier/Documents/PYTHON/00_IBL/paper-reproducible-ephys/repeated_site_pids.npy"))
 root_path = Path("/mnt/s0/Data")
-pids = ['ce397420-3cd2-4a55-8fd1-5e28321981f4',  #  0 ok
-        'e31b4e39-e350-47a9-aca4-72496d99ff2a',  #  2 ok
-        '1e176f17-d00f-49bb-87ff-26d237b525f1',  #  4 ok
-        'b25799a5-09e8-4656-9c1b-44bc9cbb5279',  #  5 ok
-        'c17772a9-21b5-49df-ab31-3017addea12e',  #  6 ok
-]
+pids = [p.parts[-1] for p in YAS_ROOT_DIR.glob('*') if is_uuid_string(p.parts[-1])]
+
 
 
 IMIN = 0
 IMAX = 500
+OVERWRITE = False
 for i, pid in enumerate(pids):
     plt.close('all')
     if i < IMIN or i > IMAX:
         continue
     plt.close('all')
+    if next(FIG_DIR.glob(f"{pid}*"), None) and not OVERWRITE:
+        continue
     fs = 30000
-
     # load YAS Data
-    YAS_DIR = Path(f"/datadisk/Data/spike_sorting/re_datasets/{pid}")  # contains npy output of localisation / registrtaio
+    YAS_DIR = YAS_ROOT_DIR.joinpath(pid)  # contains npy output of localisation / registrtaio
     ss = {'yas': {}, 'yasreg': {}}
     ss['yas']['spikes'], ss['yas']['channels'] = load_npy_yasap(YAS_DIR, fs, registration=False)
     ss['yasreg']['spikes'], ss['yasreg']['channels'] = load_npy_yasap(YAS_DIR, fs, registration=True)

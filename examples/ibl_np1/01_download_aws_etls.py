@@ -5,9 +5,15 @@ import boto3
 from one.api import ONE
 from pathlib import Path
 
+# aws s3 sync s3://ibl-brain-wide-map-private/data/etls/yass/ /datadisk/Data/spike_sorting/re_datasets/
+
 one = ONE()
 PRIVATE_REPO_NAME = 'ibl-brain-wide-map-private'
 DATA_DIR = Path(f"/datadisk/Data/spike_sorting/re_datasets")  # YOUR LOCAL PATH
+pids = None  # set to None to download all available
+
+pids = ["64d04585-67e7-4320-baad-8d4589fd18f7",  # CA1
+        "31d8dfb1-71fd-4c53-9229-7cd48bee07e4"]  # MOS
 
 
 def download_s3_folder(s3r, bucket_name, s3_folder, local_dir=None):
@@ -36,11 +42,12 @@ session = boto3.Session(
     aws_secret_access_key=s3info['Secret access key'],
 )
 s3c = session.client('s3')
-result = s3c.list_objects(Bucket=s3info['bucket_name'], Prefix='etls/yass/', Delimiter='/')
-pids = []
-for o in result.get('CommonPrefixes'):
-    pids.append(Path(o.get('Prefix')).parts[-1])
-print(pids)
+result = s3c.list_objects(Bucket=s3info['bucket_name'], Prefix='data/etls/yass/', Delimiter='/')
+if pids is None:
+    pids = []
+    for o in result.get('CommonPrefixes'):
+        pids.append(Path(o.get('Prefix')).parts[-1])
+    print(pids)
 
 
 session = boto3.Session(
@@ -55,4 +62,4 @@ for pid in pids:
         continue
     else:
         print(f'downloading {pid}...')
-        download_s3_folder(s3r, bucket_name=s3info['bucket_name'], s3_folder=f'etls/yass/{pid}', local_dir=DATA_DIR.joinpath(pid))
+        download_s3_folder(s3r, bucket_name=s3info['bucket_name'], s3_folder=f'data/etls/yass/{pid}', local_dir=DATA_DIR.joinpath(pid))
