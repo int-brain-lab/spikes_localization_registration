@@ -6,6 +6,8 @@ import numpy as np
 import signal
 import time
 import torch
+import logging
+import pandas as pd
 
 from collections import namedtuple
 from scipy.spatial.distance import pdist, squareform
@@ -14,6 +16,7 @@ from tqdm.auto import tqdm
 import spikeglx
 from . import denoise, detect, localize_index
 
+_logger = logging.getLogger(__name__)
 
 def subtraction(
     standardized_bin,
@@ -170,7 +173,7 @@ def subtraction(
         T_samples if t_end is None else int(np.floor(t_end * sampling_rate))
     )
     portion_len_s = (end_sample - start_sample) / 30000
-    print(
+    _logger.info(
         f"Running subtraction. Total recording length is {T_sec:0.2f} "
         f"s, running on portion of length {portion_len_s:0.2f} s. "
         f"Using {detection_kind} detection with thresholds: {thresholds}."
@@ -854,18 +857,21 @@ def subtract_and_localize(
             device=device,
             probe=probe,
         )
+        _logger.debug(f"Detected and subtracted {spind.shape[0]} spikes with threshold {threshold} on {thresholds}")
         if len(spind):
             subtracted_wfs.append(subwfs)
             spike_index.append(spind)
 
     subtracted_wfs = np.concatenate(subtracted_wfs, axis=0)
     spike_index = np.concatenate(spike_index, axis=0)
+    _logger.debug(f"Detected and subtracted {spike_index.shape[0]} spikes Total")
 
     # sort so time increases
     sort = np.argsort(spike_index[:, 0])
     subtracted_wfs = subtracted_wfs[sort]
     spike_index = spike_index[sort]
 
+    _logger.debug(f"Denoising waveforms...")
     # "collision-cleaned" wfs
     cleaned_wfs = read_waveforms(
         residual,
@@ -875,6 +881,7 @@ def subtract_and_localize(
         trough_offset=trough_offset,
         buffer=0,
     )
+
     cleaned_wfs = full_denoising(
         cleaned_wfs + subtracted_wfs,
         spike_index[:, 1],
@@ -887,6 +894,7 @@ def subtract_and_localize(
     )
 
     # localize
+    _logger.debug(f"Localisation...")
     locptps = cleaned_wfs.ptp(1)
     xs, ys, z_rels, z_abss, alphas = localize_index.localize_ptps_index(
         locptps,
@@ -898,9 +906,11 @@ def subtract_and_localize(
         n_workers=loc_workers,
         pbar=False,
     )
-
-    return spike_index, subtracted_wfs, cleaned_wfs, xs, ys, z_abss, alphas
-
+    df_localisation = pd.DataFrame(
+        data=np.c_[spike_index[:, 0] + spike_length_samples * 2, spike_index[:, 1], xs, ys, z_abss, alphas],
+        columns=['sample', 'trace', 'x', 'y', 'z', 'alpha']
+    )
+    return df_localisation, cleaned_wfs
 
 # -- denoising / detection helpers
 
